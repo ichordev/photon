@@ -8,9 +8,8 @@ import core.sys.posix.sys.socket;
 import core.thread;
 import core.sys.posix.stdlib: abort;
 import core.sys.posix.poll;
-import std.socket;
 import core.sys.posix.fcntl;
-import dfio;
+import photon;
 
 shared int idx = 0;
 

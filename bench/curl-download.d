@@ -1,7 +1,7 @@
 module curl_download;
 import std.net.curl;
 import std.stdio;
-import dfio;
+import photon;
 
 void main(){
     startloop();

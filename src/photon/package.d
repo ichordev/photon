@@ -1,9 +1,9 @@
-module dfio;
-
-public import dfio_linux;
-public import dfio_win;
+package photon;
 
 import core.thread;
+version(linux) public import photon.windows.core;
+else version(Windows) public import photon.linux.core;
+else static assert(false, "Target OS not supported by Photon yet!")
 
 void runFibers()
 {
