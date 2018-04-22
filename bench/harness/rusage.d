@@ -73,7 +73,7 @@ int main(string[] argv) {
     action.sa_sigaction = &signal_handler;
     enforce(sigaction(SIGTERM, &action, null) >= 0);
     enforce(sigaction(SIGINT, &action, null) >= 0);
-    log.writeln("name,read(MB),written(MB),kernel cpu time(sec),user cpu time(sec),RSS(MB)");
+    log.writeln("time,name,read(MB),written(MB),kernel cpu time(sec),user cpu time(sec),RSS(MB)");
     Stats prev;
     for(;;) {
         auto status = tryWait(p);
