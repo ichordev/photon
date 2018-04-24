@@ -28,6 +28,8 @@ import core.sys.linux.sched;
 
 import photon.linux.support;
 import photon.linux.syscalls;
+import photon.ds.common;
+import photon.ds.intrusive_queue;
 
 class FiberExt : Fiber { 
     FiberExt next;
@@ -66,6 +68,7 @@ static assert(SchedulerBlock.sizeof == 64);
 package(photon) shared SchedulerBlock[] scheds;
 
 enum int MAX_EVENTS = 500;
+enum int SIGNAL = 42;
 
 package(photon) void schedulerEntry(size_t n)
 {
@@ -300,7 +303,6 @@ public void startloop()
 
     ssize_t fdMax = sysconf(_SC_OPEN_MAX).checked;
     descriptors = (cast(shared(Descriptor*)) mmap(null, fdMax * Descriptor.sizeof, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0))[0..fdMax];
-    timerFdPool = new shared ObjectPool!TimerFD;
     scheds = new SchedulerBlock[threads];
     foreach(ref sched; scheds) {
         sched.queue = IntrusiveQueue!(FiberExt, Event)(Event(0));
@@ -332,7 +334,7 @@ extern(C) void* processEventsEntry(void*)
             }
             else if (fd == signal_loop_fd) {
                 logf("Intercepted our aio SIGNAL");
-                ssize_t r2 = sys_read(signal_loop_fd, &fdsi, fdsi.sizeof);
+                ssize_t r2 = raw_read(signal_loop_fd, &fdsi, fdsi.sizeof);
                 logf("aio events = %d", r2 / signalfd_siginfo.sizeof);
                 if (r2 % signalfd_siginfo.sizeof != 0)
                     checked(r2, "ERROR: failed read on signalfd");

@@ -1,6 +1,7 @@
 module photon.ds.intrusive_queue;
 
 import photon.ds.common;
+import core.internal.spinlock;
 
 shared struct IntrusiveQueue(T, Event) 
 if (is(T : Object)) {

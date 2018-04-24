@@ -2,13 +2,17 @@ module photon.timer;
 
 import core.sys.posix.unistd;
 import core.sys.linux.timerfd;
+import core.stdc.errno;
+import core.thread;
+
+import photon.linux.syscalls;
 
 enum int MSG_DONTWAIT = 0x40;
 
 extern(C) int eventfd(uint initial, int flags) nothrow;
 
 
-int checked(int value, const char* msg="unknown place") nothrow {
+ssize_t checked(ssize_t value, const char* msg="unknown place") nothrow {
     if (value < 0) {
         perror(msg);
         _exit(value);
@@ -72,8 +76,8 @@ struct Timer {
 nothrow:
     private int timerfd;
 
-    this() {
-        timerfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC).checked;
+    void init() {
+        timerfd = timerfd_create(clock, TFD_NONBLOCK | TFD_CLOEXEC).checked;
     }
 
     int fd() {
