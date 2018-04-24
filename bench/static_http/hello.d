@@ -9,7 +9,7 @@ import std.socket;
 import std.uni;
 import core.thread;
 
-import dfio;
+import photon;
 import utils.http_server;
 
 class HelloWorldProcessor : HttpProcessor {
@@ -31,7 +31,7 @@ void server() {
     server.bind(new InternetAddress("0.0.0.0", 8080));
     server.listen(1000);
 
-    logf("Started server");
+    debug writeln("Started server");
 
     void processClient(Socket client) {
         spawn(() => server_worker(client));
@@ -39,9 +39,9 @@ void server() {
 
     while(true) {
         try {
-            logf("Waiting for server.accept()");
+            debug writeln("Waiting for server.accept()");
             Socket client = server.accept();
-            logf("New client accepted %s", client);
+            debug writeln("New client accepted");
             processClient(client);
         }
         catch(Exception e) {

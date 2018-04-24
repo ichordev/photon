@@ -267,7 +267,7 @@ public void startloop()
     eventLoop = pthread_create(cast(pthread_t*)&eventLoop, null, &processEventsEntry, null);
 }
 
-void stoploop()
+package(photon) void stoploop()
 {
     void* ret;
     pthread_join(eventLoop, &ret);

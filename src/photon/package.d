@@ -1,9 +1,9 @@
-package photon;
+module photon;
 
 import core.thread;
-version(linux) public import photon.windows.core;
-else version(Windows) public import photon.linux.core;
-else static assert(false, "Target OS not supported by Photon yet!")
+version(Windows) public import photon.windows.core;
+else version(linux) public import photon.linux.core;
+else static assert(false, "Target OS not supported by Photon yet!");
 
 void runFibers()
 {
