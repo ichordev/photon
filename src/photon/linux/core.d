@@ -24,7 +24,6 @@ import core.memory;
 import core.sys.posix.sys.mman;
 import core.sys.posix.pthread;
 import core.sys.linux.sys.signalfd;
-import core.sys.linux.sched;
 
 import photon.linux.support;
 import photon.linux.syscalls;

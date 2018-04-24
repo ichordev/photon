@@ -5,7 +5,6 @@ project('Photon Libary', 'd',
     version : '0.1.0'
 )
 
-
 version = meson.project_version()
 
 http_parser_sp = subproject('http-parser')
