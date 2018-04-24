@@ -1,4 +1,4 @@
-module photon.timer;
+module photon.linux.support;
 
 import core.sys.posix.unistd;
 import core.sys.linux.timerfd;
@@ -8,14 +8,15 @@ import core.thread;
 import photon.linux.syscalls;
 
 enum int MSG_DONTWAIT = 0x40;
+enum int SOCK_NONBLOCK = 0x800;
 
 extern(C) int eventfd(uint initial, int flags) nothrow;
+extern(C) void perror(const(char) *s) nothrow;
 
-
-ssize_t checked(ssize_t value, const char* msg="unknown place") nothrow {
+T checked(T: ssize_t)(T value, const char* msg="unknown place") nothrow {
     if (value < 0) {
         perror(msg);
-        _exit(value);
+        _exit(cast(int)-value);
     }
     return value;
 }
@@ -50,7 +51,7 @@ nothrow:
         ubyte[8] bytes = void;
         ssize_t r;
         do {
-            r = sys_read(fd, bytes.ptr, 8);
+            r = raw_read(fd, bytes.ptr, 8);
         } while(r < 0 && errno == EINTR);
         r.checked("event reset");
     }
@@ -64,7 +65,7 @@ nothrow:
         value.cnt = 1;
         ssize_t r;
         do {
-            r = sys_write(fd, value.bytes.ptr, 8);
+            r = raw_write(fd, value.bytes.ptr, 8);
         } while(r < 0 && errno == EINTR);
         r.checked("event trigger");
     }
@@ -77,7 +78,7 @@ nothrow:
     private int timerfd;
 
     void init() {
-        timerfd = timerfd_create(clock, TFD_NONBLOCK | TFD_CLOEXEC).checked;
+        timerfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC).checked;
     }
 
     int fd() {

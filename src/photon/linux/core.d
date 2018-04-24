@@ -214,49 +214,6 @@ nothrow:
     }
 }
 
-enum Fcntl: int { explicit = 0, msg = MSG_DONTWAIT, sock = SOCK_NONBLOCK }
-enum SyscallKind { accept, read, write }
-
-// intercept - a filter for file descriptor, changes flags and register on first use
-void interceptFd(Fcntl needsFcntl)(int fd) nothrow {
-    logf("Hit interceptFD");
-    if (fd < 0 || fd >= descriptors.length) return;
-    if (cas(&descriptors[fd].intercepted, false, true)) {
-        logf("First use, registering fd = %d", fd);
-        static if(needsFcntl == Fcntl.explicit) {
-            int flags = fcntl(fd, F_GETFL, 0);
-            fcntl(fd, F_SETFL, flags | O_NONBLOCK).checked;
-        }
-        epoll_event event;
-        event.events = EPOLLIN | EPOLLOUT | EPOLLET;
-        event.data.fd = fd;
-        if (epoll_ctl(event_loop_fd, EPOLL_CTL_ADD, fd, &event) < 0 && errno == EPERM) {
-            logf("Detected real file FD, switching from epoll to aio");
-            descriptors[fd].isSocket = false;
-        }
-        else {
-            logf("isSocket = true");
-            descriptors[fd].isSocket = true;
-        }
-        descriptors[fd].intercepted = true;
-    }
-    int flags = fcntl(fd, F_GETFL, 0);
-    if (!(flags & O_NONBLOCK)) {
-        logf("WARNING: Socket (%d) not set in O_NONBLOCK mode!", fd);
-    }
-}
-
-void deregisterFd(int fd) nothrow {
-    if(fd >= 0 && fd < descriptors.length) {
-        auto descriptor = descriptors.ptr + fd;
-        atomicStore(descriptor._writerState, WriterState.READY);
-        atomicStore(descriptor._readerState, ReaderState.EMPTY);
-        descriptor.scheduleReaders();
-        descriptor.scheduleWriters();
-        atomicStore(descriptor.intercepted, false);
-    }
-}
-
 extern(C) void graceful_shutdown_on_signal(int, siginfo_t*, void*)
 {
     version(photon_tracing) printStats();
@@ -400,44 +357,184 @@ extern(C) void* processEventsEntry(void*)
     }
 }
 
+
+enum Fcntl: int { explicit = 0, msg = MSG_DONTWAIT, sock = SOCK_NONBLOCK }
+enum SyscallKind { accept, read, write }
+
+// intercept - a filter for file descriptor, changes flags and register on first use
+void interceptFd(Fcntl needsFcntl)(int fd) nothrow {
+    logf("Hit interceptFD");
+    if (fd < 0 || fd >= descriptors.length) return;
+    if (cas(&descriptors[fd].intercepted, false, true)) {
+        logf("First use, registering fd = %d", fd);
+        static if(needsFcntl == Fcntl.explicit) {
+            int flags = fcntl(fd, F_GETFL, 0);
+            fcntl(fd, F_SETFL, flags | O_NONBLOCK).checked;
+        }
+        epoll_event event;
+        event.events = EPOLLIN | EPOLLOUT | EPOLLET;
+        event.data.fd = fd;
+        if (epoll_ctl(event_loop_fd, EPOLL_CTL_ADD, fd, &event) < 0 && errno == EPERM) {
+            logf("Detected real file FD, switching from epoll to aio");
+            descriptors[fd].isSocket = false;
+        }
+        else {
+            logf("isSocket = true");
+            descriptors[fd].isSocket = true;
+        }
+        descriptors[fd].intercepted = true;
+    }
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (!(flags & O_NONBLOCK)) {
+        logf("WARNING: Socket (%d) not set in O_NONBLOCK mode!", fd);
+    }
+}
+
+void deregisterFd(int fd) nothrow {
+    if(fd >= 0 && fd < descriptors.length) {
+        auto descriptor = descriptors.ptr + fd;
+        atomicStore(descriptor._writerState, WriterState.READY);
+        atomicStore(descriptor._readerState, ReaderState.EMPTY);
+        descriptor.scheduleReaders();
+        descriptor.scheduleWriters();
+        atomicStore(descriptor.intercepted, false);
+    }
+}
+
+ssize_t universalSyscall(size_t ident, string name, SyscallKind kind, Fcntl fcntlStyle, ssize_t ERR, T...)
+                        (int fd, T args) nothrow {
+    if (currentFiber is null) {
+        logf("%s PASSTHROUGH FD=%s", name, fd);
+        return syscall(ident, fd, args).withErrorno;
+    }
+    else {
+        logf("HOOKED %s FD=%d", name, fd);
+        interceptFd!(fcntlStyle)(fd);
+        shared(Descriptor)* descriptor = descriptors.ptr + fd;
+    L_start:
+        // set flags argument if able to avoid direct fcntl calls
+        static if (fcntlStyle != Fcntl.explicit)
+        {
+            args[2] |= fcntlStyle;
+        }
+        static if(kind == SyscallKind.accept || kind == SyscallKind.read) {
+            auto state = descriptor.readerState;
+            logf("%s syscall state is %d", name, state);
+            final switch (state) with (ReaderState) {
+            case EMPTY:
+                auto head = descriptor.readWaiters;
+                if (!descriptor.enqueueReader(head, cast(shared)currentFiber)) goto L_start;
+                // changed state to e.g. READY or UNCERTAIN in meantime, may need to reschedule
+                if (descriptor.readerState != EMPTY) descriptor.scheduleReaders();
+                FiberExt.yield();
+                goto L_start;
+            case UNCERTAIN:
+                descriptor.changeReader(UNCERTAIN, READING); // may became READY or READING
+                goto case READING;
+            case READY:
+                descriptor.changeReader(READY, READING); // always succeeds if 1 fiber reads
+                goto case READING;
+            case READING:
+                ssize_t resp = syscall(ident, fd, args);
+                static if (kind == SyscallKind.accept) {
+                    if (resp >= 0) // for accept we never know if we emptied the queue
+                        descriptor.changeReader(READING, UNCERTAIN);
+                    else if (resp == -ERR || resp == -EAGAIN) {
+                        if (descriptor.changeReader(READING, EMPTY))
+                            goto case EMPTY;
+                        goto L_start; // became UNCERTAIN or READY in meantime
+                    }
+                }
+                else static if (kind == SyscallKind.read) {
+                    if (resp == args[1]) // length is 2nd in (buf, length, ...)
+                        descriptor.changeReader(READING, UNCERTAIN);
+                    else if(resp >= 0)
+                        descriptor.changeReader(READING, EMPTY);
+                    else if (resp == -ERR || resp == -EAGAIN) {
+                        if (descriptor.changeReader(READING, EMPTY))
+                            goto case EMPTY;
+                        goto L_start; // became UNCERTAIN or READY in meantime
+                    }
+                }
+                else
+                    static assert(0);
+                return withErrorno(resp);
+            }
+        }
+        else static if(kind == SyscallKind.write) {
+            //TODO: Handle short-write b/c of EWOULDBLOCK to apear as fully blocking
+            auto state = descriptor.writerState;
+            logf("%s syscall state is %d", name, state);
+            final switch (state) with (WriterState) {
+            case FULL:
+                auto head = descriptor.writeWaiters;
+                if (!descriptor.enqueueReader(head, cast(shared)currentFiber)) goto L_start;
+                // changed state to e.g. READY or UNCERTAIN in meantime, may need to reschedule
+                if (descriptor.writerState != FULL) descriptor.scheduleWriters();
+                FiberExt.yield();
+                goto L_start;
+            case UNCERTAIN:
+                descriptor.changeWriter(UNCERTAIN, WRITING); // may became READY or WRITING
+                goto case WRITING;
+            case READY:
+                descriptor.changeWriter(READY, WRITING); // always succeeds if 1 fiber writes
+                goto case WRITING;
+            case WRITING:
+                ssize_t resp = syscall(ident, fd, args);
+                if (resp == args[1]) // (buf, len) args to syscall
+                    descriptor.changeWriter(WRITING, UNCERTAIN);
+                else if(resp >= 0)
+                    descriptor.changeWriter(WRITING, FULL);
+                else if (resp == -ERR || resp == -EAGAIN) {
+                    if (descriptor.changeWriter(WRITING, FULL))
+                        goto case FULL;
+                    goto L_start; // became UNCERTAIN or READY in meantime
+                }
+                return withErrorno(resp);
+            }
+        }
+        assert(0);
+    }
+}
+
 // ======================================================================================
 // SYSCALL warappers intercepts
 // ======================================================================================
 
 extern(C) ssize_t read(int fd, void *buf, size_t count) nothrow
 {
-    return universalSyscall!(SYS_READ, "READ", SyscallKind.read, Fcntl.yes, EWOULDBLOCK)
+    return universalSyscall!(SYS_READ, "READ", SyscallKind.read, Fcntl.explicit, EWOULDBLOCK)
         (fd, cast(size_t)buf, count);
 }
 
 extern(C) ssize_t write(int fd, const void *buf, size_t count)
 {
-    return universalSyscall!(SYS_WRITE, "WRITE", SyscallKind.write, Fcntl.yes, EWOULDBLOCK)
+    return universalSyscall!(SYS_WRITE, "WRITE", SyscallKind.write, Fcntl.explicit, EWOULDBLOCK)
         (fd, cast(size_t)buf, count);
 }
 
 extern(C) ssize_t accept(int sockfd, sockaddr *addr, socklen_t *addrlen)
 {
-    return universalSyscall!(SYS_ACCEPT, "accept", SyscallKind.accept, Fcntl.yes, EWOULDBLOCK)
+    return universalSyscall!(SYS_ACCEPT, "accept", SyscallKind.accept, Fcntl.explicit, EWOULDBLOCK)
         (sockfd, cast(size_t) addr, cast(size_t) addrlen);    
 }
 
 extern(C) ssize_t accept4(int sockfd, sockaddr *addr, socklen_t *addrlen, int flags)
 {
-    return universalSyscall!(SYS_ACCEPT4, "accept4", SyscallKind.accept, Fcntl.yes, EWOULDBLOCK)
+    return universalSyscall!(SYS_ACCEPT4, "accept4", SyscallKind.accept, Fcntl.sock, EWOULDBLOCK)
         (sockfd, cast(size_t) addr, cast(size_t) addrlen, flags);
 }
 
 extern(C) ssize_t connect(int sockfd, const sockaddr *addr, socklen_t *addrlen)
 {
-    return universalSyscall!(SYS_CONNECT, "connect", SyscallKind.accept, Fcntl.yes, EINPROGRESS)
+    return universalSyscall!(SYS_CONNECT, "connect", SyscallKind.accept, Fcntl.explicit, EINPROGRESS)
         (sockfd, cast(size_t) addr, cast(size_t) addrlen);
 }
 
 extern(C) ssize_t sendto(int sockfd, const void *buf, size_t len, int flags,
                       const sockaddr *dest_addr, socklen_t addrlen)
 {
-    return universalSyscall!(SYS_SENDTO, "sendto", SyscallKind.read, Fcntl.no, EWOULDBLOCK)
+    return universalSyscall!(SYS_SENDTO, "sendto", SyscallKind.read, Fcntl.msg, EWOULDBLOCK)
         (sockfd, cast(size_t) buf, len, flags, cast(size_t) dest_addr, cast(size_t) addrlen);
 }
 
@@ -453,7 +550,7 @@ extern(C) size_t recv(int sockfd, void *buf, size_t len, int flags) nothrow {
 extern(C) private ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags,
                         sockaddr *src_addr, ssize_t* addrlen) nothrow
 {
-    return universalSyscall!(SYS_RECVFROM, "RECVFROM", SyscallKind.read, Fcntl.no, EWOULDBLOCK)
+    return universalSyscall!(SYS_RECVFROM, "RECVFROM", SyscallKind.read, Fcntl.msg, EWOULDBLOCK)
         (sockfd, cast(size_t)buf, len, flags, cast(size_t)src_addr, cast(size_t)addrlen);
 }
 

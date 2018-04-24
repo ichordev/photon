@@ -189,7 +189,7 @@ ssize_t raw_write(int fd, const void *buf, size_t count) nothrow
     return syscall(SYS_WRITE, fd, cast(size_t) buf, count).withErrorno;
 }
 
-int raw_poll(pollfd *fds, nfds_t nfds, int timeout)
+ssize_t raw_poll(pollfd *fds, nfds_t nfds, int timeout)
 {
     logf("Raw poll");
     return syscall(SYS_POLL, cast(size_t)fds, cast(size_t) nfds, timeout);
