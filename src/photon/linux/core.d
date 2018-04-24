@@ -214,7 +214,7 @@ nothrow:
     }
 }
 
-enum Fcntl { no, yes }
+enum Fcntl: int { explicit = 0, msg = MSG_DONTWAIT, sock = SOCK_NONBLOCK }
 enum SyscallKind { accept, read, write }
 
 // intercept - a filter for file descriptor, changes flags and register on first use
@@ -223,7 +223,7 @@ void interceptFd(Fcntl needsFcntl)(int fd) nothrow {
     if (fd < 0 || fd >= descriptors.length) return;
     if (cas(&descriptors[fd].intercepted, false, true)) {
         logf("First use, registering fd = %d", fd);
-        static if(needsFcntl == Fcntl.yes) {
+        static if(needsFcntl == Fcntl.explicit) {
             int flags = fcntl(fd, F_GETFL, 0);
             fcntl(fd, F_SETFL, flags | O_NONBLOCK).checked;
         }
