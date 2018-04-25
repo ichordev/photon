@@ -10,6 +10,8 @@ import core.sys.posix.stdlib: abort;
 import core.sys.posix.poll;
 import core.sys.posix.fcntl;
 import photon;
+import photon.linux.support;
+import photon.linux.syscalls;
 
 shared int idx = 0;
 
@@ -19,7 +21,7 @@ void check(int code) {
 }
 
 void writer(int fd) {
-    logf("<started writer, fd = %d>", fd);
+    writefln("<started writer, fd = %d>", fd);
     auto s = "wait and write\n";
     for (int i = 0; i <  30; ++i) {
         logf("writer idx = %d", i);
@@ -46,7 +48,7 @@ void reader(int fd) {
         logf("rc = %d", rc);
         if (idx == 29) finished = true;
         //logf("preparing to read");
-        ssize_t resp = sys_read(fds.fd, buf.ptr, total).checked("read fail");
+        ssize_t resp = raw_read(fds.fd, buf.ptr, total).checked("read fail");
         logf("read resp = %s", resp);
     } while(!finished);
     logf(" <finished reader>");

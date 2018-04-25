@@ -30,6 +30,40 @@ import photon.linux.syscalls;
 import photon.ds.common;
 import photon.ds.intrusive_queue;
 
+// T becomes thread-local b/c it's stolen from shared resource
+auto steal(T)(ref shared T arg)
+{
+    auto v = atomicLoad(arg);
+    if (v !is null && cas(&arg, v, cast(shared(T))null)) {
+        return v;
+    }
+    return null;
+}
+
+struct AwaitingFiber {
+    shared FiberExt fiber;
+    AwaitingFiber* next;
+
+    void scheduleAll() nothrow
+    {
+        auto w = &this;
+        FiberExt head;
+        // first process all AwaitingFibers since they are on stack
+        do {
+            auto fiber = steal(w.fiber);
+            if (fiber) {
+                fiber.unshared.next = head;
+                head = fiber.unshared;
+            }
+            w = w.next;
+        } while(w);
+        while(head) {
+            head.schedule();
+            head = head.next;
+        }
+    }
+}
+
 class FiberExt : Fiber { 
     FiberExt next;
     uint numScheduler;
@@ -140,9 +174,9 @@ enum WriterState: uint {
 // list of awaiting fibers
 shared struct Descriptor {
     ReaderState _readerState;   
-    FiberExt _readerWaits;
+    AwaitingFiber* _readerWaits;
     WriterState _writerState;
-    FiberExt _writerWaits;
+    AwaitingFiber* _writerWaits;
     bool intercepted;
     bool isSocket;
 nothrow:
@@ -165,51 +199,39 @@ nothrow:
     }
 
     //
-    shared(FiberExt) readWaiters()() {
+    shared(AwaitingFiber)* readWaiters()() {
         return atomicLoad(_readerWaits);
     }
 
     //
-    shared(FiberExt) writeWaiters()(){
+    shared(AwaitingFiber)* writeWaiters()(){
         return atomicLoad(_writerWaits);
     }
 
     // try to enqueue reader fiber given old head
-    bool enqueueReader()(shared(FiberExt) head, shared(FiberExt) fiber) {
+    bool enqueueReader()(shared(AwaitingFiber)* fiber) {
+        auto head = readWaiters;
         fiber.next = head;
         return cas(&_readerWaits, head, fiber);
     }
 
     // try to enqueue writer fiber given old head
-    bool enqueueWriter()(shared(FiberExt) head, shared(FiberExt) fiber) {
+    bool enqueueWriter()(shared(AwaitingFiber)* fiber) {
+        auto head = writeWaiters;
         fiber.next = head;
         return cas(&_writerWaits, head, fiber);
     }
 
     // try to schedule readers - if fails - someone added a reader, it's now his job to check state
     void scheduleReaders()() {
-        auto w = readWaiters;
-        if (w && cas(&_readerWaits, w, cast(shared)null)) {
-            auto wu = w.unshared;
-            while(wu.next) {
-                wu.schedule();
-                wu = wu.next;
-            }
-            wu.schedule();
-        }
+        auto w = steal(_readerWaits);
+        if (w) w.unshared.scheduleAll();
     }
 
     // try to schedule writers, ditto
     void scheduleWriters()() {
-        auto w = writeWaiters;
-        if (w && cas(&_writerWaits, w, cast(shared)null)) {
-            auto wu = w.unshared;
-            while(wu.next) {
-                wu.schedule();
-                wu = wu.next;
-            }
-            wu.schedule();
-        }
+        auto w = steal(_writerWaits);
+        if (w) w.unshared.scheduleAll();
     }
 }
 
@@ -411,6 +433,7 @@ ssize_t universalSyscall(size_t ident, string name, SyscallKind kind, Fcntl fcnt
         interceptFd!(fcntlStyle)(fd);
         shared(Descriptor)* descriptor = descriptors.ptr + fd;
     L_start:
+        shared AwaitingFiber await = AwaitingFiber(cast(shared)currentFiber, null);
         // set flags argument if able to avoid direct fcntl calls
         static if (fcntlStyle != Fcntl.explicit)
         {
@@ -421,8 +444,7 @@ ssize_t universalSyscall(size_t ident, string name, SyscallKind kind, Fcntl fcnt
             logf("%s syscall state is %d", name, state);
             final switch (state) with (ReaderState) {
             case EMPTY:
-                auto head = descriptor.readWaiters;
-                if (!descriptor.enqueueReader(head, cast(shared)currentFiber)) goto L_start;
+                if (!descriptor.enqueueReader(&await)) goto L_start;
                 // changed state to e.g. READY or UNCERTAIN in meantime, may need to reschedule
                 if (descriptor.readerState != EMPTY) descriptor.scheduleReaders();
                 FiberExt.yield();
@@ -466,8 +488,7 @@ ssize_t universalSyscall(size_t ident, string name, SyscallKind kind, Fcntl fcnt
             logf("%s syscall state is %d", name, state);
             final switch (state) with (WriterState) {
             case FULL:
-                auto head = descriptor.writeWaiters;
-                if (!descriptor.enqueueReader(head, cast(shared)currentFiber)) goto L_start;
+                if (!descriptor.enqueueWriter(&await)) goto L_start;
                 // changed state to e.g. READY or UNCERTAIN in meantime, may need to reschedule
                 if (descriptor.writerState != FULL) descriptor.scheduleWriters();
                 FiberExt.yield();
@@ -555,13 +576,13 @@ extern(C) private ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags,
 
 extern(C) private int poll(pollfd *fds, nfds_t nfds, int timeout)
 {
-    /*if (currentFiber is null) {
+    if (currentFiber is null) {
         logf("POLL PASSTHROUGH!");
-        return cast(int)syscall(SYS_POLL, cast(size_t)fds, cast(size_t)nfds, timeout).withErrorno;
+        return cast(int)raw_poll(fds, nfds, timeout);
     }
     else {
         logf("HOOKED POLL");
-        if (timeout <= 0) return sys_poll(fds, nfds, timeout);
+        /*if (timeout <= 0) return sys_poll(fds, nfds, timeout);
 
         foreach (ref fd; fds[0..nfds]) {
             interceptFd(fd.fd);
@@ -577,12 +598,10 @@ extern(C) private int poll(pollfd *fds, nfds_t nfds, int timeout)
         timerFdPool.releaseObject(tfd);
         foreach (ref fd; fds[0..nfds]) {
             descriptors[fd.fd].unshared.removeFiber(currentFiber);
-        }
+        }*/
 
-        return sys_poll(fds, nfds, 0);
-    }*/
-    abort();
-    return 0;
+        return cast(int)raw_poll(fds, nfds, 0);
+    }
 }
 
 extern(C) private ssize_t close(int fd) nothrow

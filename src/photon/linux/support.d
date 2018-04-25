@@ -3,8 +3,10 @@ module photon.linux.support;
 import core.sys.posix.unistd;
 import core.sys.linux.timerfd;
 import core.stdc.errno;
+import core.stdc.stdlib;
 import core.thread;
 import core.stdc.config;
+import core.sys.posix.pthread;
 import photon.linux.syscalls;
 
 enum int MSG_DONTWAIT = 0x40;
@@ -34,10 +36,15 @@ ssize_t withErrorno(ssize_t resp) nothrow {
 
 void logf(string file = __FILE__, int line = __LINE__, T...)(string msg, T args)
 {
-    debug {
-        import std.stdio;
-        stderr.writefln(msg, args);
-        stderr.writefln("\tat %s:%s:[LWP:%s]", file, line, pthread_self());
+    debug(photon) {
+        try {
+            import std.stdio;
+            stderr.writefln(msg, args);
+            stderr.writefln("\tat %s:%s:[LWP:%s]", file, line, pthread_self());
+        }
+        catch(Throwable t) {
+            abort();
+        }
     }
 }
 

@@ -1,7 +1,12 @@
 module photon.ds.common;
 
-ref T unshared(T)(ref shared T value) {
+ref T unshared(T)(ref shared  T value) 
+if (is(T == class)) {
      return *cast(T*)&value;
+}
+
+ref T* unshared(T)(ref shared(T)* value) {
+     return *cast(T**)&value;
 }
 
 interface WorkQueue(T) {

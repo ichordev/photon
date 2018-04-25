@@ -18,3 +18,4 @@ subdir('src')
 
 subdir('bench/static_http')
 
+subdir('tests')
