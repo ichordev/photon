@@ -40,3 +40,9 @@ utils_dep = declare_dependency(
 	include_directories: photon_include_dir,
 	link_with: utils
 )
+
+utils_test = executable('utils-test',
+	sources: ['utils/unit.d'],
+	dependencies: utils_dep,
+	build_by_default: true
+)
