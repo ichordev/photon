@@ -111,10 +111,7 @@ nothrow:
 
 Timer timer() {
     int timerfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC).checked;
-    epoll_event event;
-    event.events = EPOLLIN;
-    event.data.fd = timerfd;
-    epoll_ctl(event_loop_fd, EPOLL_CTL_ADD, timerfd, &event).checked("epoll_ctl");
+    interceptFd!(Fcntl.noop)(timerfd);
     return Timer(timerfd);
 }
 
@@ -447,9 +444,9 @@ extern(C) void* processEventsEntry(void*)
                 }
             }
             else {
-                logf("Event for fd=%d", fd);
                 auto descriptor = descriptors.ptr + fd;
                 if (descriptor.intercepted) {
+                    logf("Event for fd=%d", fd);
                     if (events[n].events & EPOLLIN) {
                         auto state = descriptor.readerState;
                         logf("state = %d", state);
@@ -502,7 +499,7 @@ extern(C) void* processEventsEntry(void*)
     }
 }
 
-enum Fcntl: int { explicit = 0, msg = MSG_DONTWAIT, sock = SOCK_NONBLOCK }
+enum Fcntl: int { explicit = 0, msg = MSG_DONTWAIT, sock = SOCK_NONBLOCK, noop = 0xFFFFF }
 enum SyscallKind { accept, read, write }
 
 // intercept - a filter for file descriptor, changes flags and register on first use
@@ -765,9 +762,20 @@ extern(C) private ssize_t poll(pollfd *fds, nfds_t nfds, int timeout)
         return raw_poll(fds, nfds, timeout);
     }
     else {
-        logf("HOOKED POLL");
-        if (nfds < 0 ) return -EINVAL.withErrorno;
-        if (nfds == 0) return 0;
+        logf("HOOKED POLL %d fds timeout %d", nfds, timeout);
+        if (nfds < 0) return -EINVAL.withErrorno;
+        if (nfds == 0) {
+            if (timeout == 0) return 0;
+            shared AwaitingFiber aw = shared(AwaitingFiber)(cast(shared)currentFiber);
+            Timer tm = timer();
+            descriptors[tm.fd].enqueueReader(&aw);
+            scope(exit) tm.dispose();
+            tm.arm(timeout);
+            logf("Timer fd=%d", tm.fd);
+            Fiber.yield();
+            logf("Woke up after select %x. WakeFd=%d", cast(void*)currentFiber, currentFiber.wakeFd);
+            return 0;
+        }
         foreach(ref fd; fds[0..nfds]) {
             if (fd.fd < 0 || fd.fd >= descriptors.length) return -EBADF.withErrorno;
             fd.revents = 0;
