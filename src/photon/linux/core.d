@@ -8,6 +8,7 @@ import std.exception;
 import std.conv;
 import std.array;
 import core.thread;
+import core.internal.spinlock;
 import core.sys.posix.sys.types;
 import core.sys.posix.sys.socket;
 import core.sys.posix.poll;
@@ -40,11 +41,127 @@ auto steal(T)(ref shared T arg)
     return null;
 }
 
+
+shared struct RawEvent {
+nothrow:
+    this(int init) {
+        fd = eventfd(init, 0);
+    }
+
+    void waitAndReset() {
+        ubyte[8] bytes = void;
+        ssize_t r;
+        do {
+            r = raw_read(fd, bytes.ptr, 8);
+        } while(r < 0 && errno == EINTR);
+        r.checked("event reset");
+    }
+    
+    void trigger() { 
+        union U {
+            ulong cnt;
+            ubyte[8] bytes;
+        }
+        U value;
+        value.cnt = 1;
+        ssize_t r;
+        do {
+            r = raw_write(fd, value.bytes.ptr, 8);
+        } while(r < 0 && errno == EINTR);
+        r.checked("event trigger");
+    }
+    
+    int fd;
+}
+
+struct Timer {
+nothrow:
+    private int timerfd;
+
+
+    int fd() {
+        return timerfd;
+    }
+
+    static void ms2ts(timespec *ts, ulong ms)
+    {
+        ts.tv_sec = ms / 1000;
+        ts.tv_nsec = (ms % 1000) * 1000000;
+    }
+
+    void arm(int timeout) {
+        timespec ts_timeout;
+        ms2ts(&ts_timeout, timeout); //convert miliseconds to timespec
+        itimerspec its;
+        its.it_value = ts_timeout;
+        its.it_interval.tv_sec = 0;
+        its.it_interval.tv_nsec = 0;
+        timerfd_settime(timerfd, 0, &its, null);
+    }
+
+    void disam() {
+        itimerspec its; // zeros
+        timerfd_settime(timerfd, 0, &its, null);
+    }
+
+    void dispose() { 
+        close(timerfd).checked;
+    }
+}
+
+Timer timer() {
+    int timerfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC).checked;
+    epoll_event event;
+    event.events = EPOLLIN;
+    event.data.fd = timerfd;
+    epoll_ctl(event_loop_fd, EPOLL_CTL_ADD, timerfd, &event).checked("epoll_ctl");
+    return Timer(timerfd);
+}
+
+enum EventState { ready, fibers };
+
+shared struct Event {
+    SpinLock lock = SpinLock(SpinLock.Contention.brief);
+    EventState state = EventState.ready;
+    FiberExt awaiting;
+
+    void reset() {
+        lock.lock();
+        auto f = awaiting.unshared;
+        awaiting = null;
+        state = EventState.ready;
+        lock.unlock();
+        while(f !is null) {
+            auto next = f.next;
+            f.schedule();
+            f = next;
+        }
+    }
+
+    bool ready(){
+        lock.lock();
+        scope(exit) lock.unlock();
+        return state == EventState.ready;
+    }
+
+    void await(){
+        lock.lock();
+        scope(exit) lock.unlock();
+        if (state == EventState.ready) return;
+        if (currentFiber !is null) {
+            currentFiber.next = awaiting.unshared;
+            awaiting = cast(shared)currentFiber;
+            state = EventState.fibers;
+        }
+        else abort(); //TODO: threads
+    }
+}
+
 struct AwaitingFiber {
     shared FiberExt fiber;
     AwaitingFiber* next;
 
-    void scheduleAll() nothrow
+    void scheduleAll(int wakeFd) nothrow
     {
         auto w = &this;
         FiberExt head;
@@ -58,6 +175,8 @@ struct AwaitingFiber {
             w = w.next;
         } while(w);
         while(head) {
+            logf("Waking with FD=%d", wakeFd);
+            head.wakeFd = wakeFd;
             head.schedule();
             head = head.next;
         }
@@ -67,6 +186,7 @@ struct AwaitingFiber {
 class FiberExt : Fiber { 
     FiberExt next;
     uint numScheduler;
+    int wakeFd; // recieves fd that woken us up
 
     enum PAGESIZE = 4096;
     
@@ -87,12 +207,12 @@ class FiberExt : Fiber {
 }
 
 FiberExt currentFiber; 
-shared Event termination; // termination event, triggered once last fiber exits
+shared RawEvent termination; // termination event, triggered once last fiber exits
 shared pthread_t eventLoop; // event loop, runs outside of D runtime
 shared int alive; // count of non-terminated Fibers scheduled
 
 struct SchedulerBlock {
-    shared IntrusiveQueue!(FiberExt, Event) queue;
+    shared IntrusiveQueue!(FiberExt, RawEvent) queue;
     shared uint assigned;
     size_t[2] padding;
 }
@@ -223,15 +343,15 @@ nothrow:
     }
 
     // try to schedule readers - if fails - someone added a reader, it's now his job to check state
-    void scheduleReaders()() {
+    void scheduleReaders()(int wakeFd) {
         auto w = steal(_readerWaits);
-        if (w) w.unshared.scheduleAll();
+        if (w) w.unshared.scheduleAll(wakeFd);
     }
 
     // try to schedule writers, ditto
-    void scheduleWriters()() {
+    void scheduleWriters()(int wakeFd) {
         auto w = steal(_writerWaits);
-        if (w) w.unshared.scheduleAll();
+        if (w) w.unshared.scheduleAll(wakeFd);
     }
 }
 
@@ -267,7 +387,7 @@ public void startloop()
     event.data.fd = signal_loop_fd;
     epoll_ctl(event_loop_fd, EPOLL_CTL_ADD, signal_loop_fd, &event).checked;
 
-    termination = Event(0);
+    termination = RawEvent(0);
     event.events = EPOLLIN;
     event.data.fd = termination.fd;
     epoll_ctl(event_loop_fd, EPOLL_CTL_ADD, termination.fd, &event).checked;
@@ -283,7 +403,7 @@ public void startloop()
     descriptors = (cast(shared(Descriptor*)) mmap(null, fdMax * Descriptor.sizeof, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0))[0..fdMax];
     scheds = new SchedulerBlock[threads];
     foreach(ref sched; scheds) {
-        sched.queue = IntrusiveQueue!(FiberExt, Event)(Event(0));
+        sched.queue = IntrusiveQueue!(FiberExt, RawEvent)(RawEvent(0));
     }
     eventLoop = pthread_create(cast(pthread_t*)&eventLoop, null, &processEventsEntry, null);
 }
@@ -329,55 +449,58 @@ extern(C) void* processEventsEntry(void*)
             else {
                 logf("Event for fd=%d", fd);
                 auto descriptor = descriptors.ptr + fd;
-                if (events[n].events & EPOLLIN) {
-                    auto state = descriptor.readerState;
-                    logf("state = %d", state);
-                    final switch(state) with(ReaderState) { 
-                        case EMPTY:
-                            descriptor.changeReader(EMPTY, READY);
-                            descriptor.scheduleReaders();
-                            break;
-                        case UNCERTAIN:
-                            descriptor.changeReader(UNCERTAIN, READY);
-                            break;
-                        case READING:
-                            if (!descriptor.changeReader(READING, UNCERTAIN)) {
-                                if (descriptor.changeReader(EMPTY, UNCERTAIN)) // if became empty - move to UNCERTAIN and wake readers
-                                    descriptor.scheduleReaders();
-                            }
-                            break;
-                        case READY:
-                            break;
+                if (descriptor.intercepted) {
+                    if (events[n].events & EPOLLIN) {
+                        auto state = descriptor.readerState;
+                        logf("state = %d", state);
+                        final switch(state) with(ReaderState) { 
+                            case EMPTY:
+                                descriptor.changeReader(EMPTY, READY);
+                                descriptor.scheduleReaders(fd);
+                                break;
+                            case UNCERTAIN:
+                                descriptor.changeReader(UNCERTAIN, READY);
+                                break;
+                            case READING:
+                                if (!descriptor.changeReader(READING, UNCERTAIN)) {
+                                    if (descriptor.changeReader(EMPTY, UNCERTAIN)) // if became empty - move to UNCERTAIN and wake readers
+                                        descriptor.scheduleReaders(fd);
+                                }
+                                break;
+                            case READY:
+                                descriptor.scheduleReaders(fd);
+                                break;
+                        }
+                        logf("Awaits %x", cast(void*)descriptor.readWaiters);
                     }
-                    logf("Awaits %x", cast(void*)descriptor.readWaiters);
-                }
-                if (events[n].events & EPOLLOUT) {
-                    auto state = descriptor.writerState;
-                    logf("state = %d", state);
-                    final switch(state) with(WriterState) { 
-                        case FULL:
-                            descriptor.changeWriter(FULL, READY);
-                            descriptor.scheduleWriters();
-                            break;
-                        case UNCERTAIN:
-                            descriptor.changeWriter(UNCERTAIN, READY);
-                            break;
-                        case WRITING:
-                            if (!descriptor.changeWriter(WRITING, UNCERTAIN)) {
-                                if (descriptor.changeWriter(FULL, UNCERTAIN)) // if became empty - move to UNCERTAIN and wake writers
-                                    descriptor.scheduleWriters();
-                            }
-                            break;
-                        case READY:
-                            break;
+                    if (events[n].events & EPOLLOUT) {
+                        auto state = descriptor.writerState;
+                        logf("state = %d", state);
+                        final switch(state) with(WriterState) { 
+                            case FULL:
+                                descriptor.changeWriter(FULL, READY);
+                                descriptor.scheduleWriters(fd);
+                                break;
+                            case UNCERTAIN:
+                                descriptor.changeWriter(UNCERTAIN, READY);
+                                break;
+                            case WRITING:
+                                if (!descriptor.changeWriter(WRITING, UNCERTAIN)) {
+                                    if (descriptor.changeWriter(FULL, UNCERTAIN)) // if became empty - move to UNCERTAIN and wake writers
+                                        descriptor.scheduleWriters(fd);
+                                }
+                                break;
+                            case READY:
+                                descriptor.scheduleWriters(fd);
+                                break;
+                        }
+                        logf("Awaits %x", cast(void*)descriptor.writeWaiters);
                     }
-                    logf("Awaits %x", cast(void*)descriptor.writeWaiters);
                 }
             }
         }
     }
 }
-
 
 enum Fcntl: int { explicit = 0, msg = MSG_DONTWAIT, sock = SOCK_NONBLOCK }
 enum SyscallKind { accept, read, write }
@@ -416,8 +539,8 @@ void deregisterFd(int fd) nothrow {
         auto descriptor = descriptors.ptr + fd;
         atomicStore(descriptor._writerState, WriterState.READY);
         atomicStore(descriptor._readerState, ReaderState.EMPTY);
-        descriptor.scheduleReaders();
-        descriptor.scheduleWriters();
+        descriptor.scheduleReaders(fd);
+        descriptor.scheduleWriters(fd);
         atomicStore(descriptor.intercepted, false);
     }
 }
@@ -446,7 +569,7 @@ ssize_t universalSyscall(size_t ident, string name, SyscallKind kind, Fcntl fcnt
             case EMPTY:
                 if (!descriptor.enqueueReader(&await)) goto L_start;
                 // changed state to e.g. READY or UNCERTAIN in meantime, may need to reschedule
-                if (descriptor.readerState != EMPTY) descriptor.scheduleReaders();
+                if (descriptor.readerState != EMPTY) descriptor.scheduleReaders(fd);
                 FiberExt.yield();
                 goto L_start;
             case UNCERTAIN:
@@ -490,7 +613,7 @@ ssize_t universalSyscall(size_t ident, string name, SyscallKind kind, Fcntl fcnt
             case FULL:
                 if (!descriptor.enqueueWriter(&await)) goto L_start;
                 // changed state to e.g. READY or UNCERTAIN in meantime, may need to reschedule
-                if (descriptor.writerState != FULL) descriptor.scheduleWriters();
+                if (descriptor.writerState != FULL) descriptor.scheduleWriters(fd);
                 FiberExt.yield();
                 goto L_start;
             case UNCERTAIN:
@@ -574,33 +697,107 @@ extern(C) private ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags,
         (sockfd, cast(size_t)buf, len, flags, cast(size_t)src_addr, cast(size_t)addrlen);
 }
 
-extern(C) private int poll(pollfd *fds, nfds_t nfds, int timeout)
+extern(C) private ssize_t poll(pollfd *fds, nfds_t nfds, int timeout)
 {
+    bool nonBlockingCheck(ref ssize_t result) {
+        bool uncertain;
+    L_cacheloop:
+        foreach (ref fd; fds[0..nfds]) {
+            interceptFd!(Fcntl.explicit)(fd.fd);
+            fd.revents = 0;
+            auto descriptor = descriptors.ptr + fd.fd;
+            if (fd.events & POLLIN) {
+                auto state = descriptor.readerState;
+                logf("Found event %d for reader in select", state);
+                switch(state) with(ReaderState) {
+                case READY:
+                    fd.revents |=  POLLIN;
+                    break;
+                case EMPTY:
+                    break;
+                default:
+                    uncertain = true;
+                    break L_cacheloop;
+                }
+            }
+            if (fd.events & POLLOUT) {
+                auto state = descriptor.writerState;
+                logf("Found event %d for writer in select", state);
+                switch(state) with(WriterState) {
+                case READY:
+                    fd.revents |= POLLOUT;
+                    break;
+                case FULL:
+                    break;
+                default:
+                    uncertain = true;
+                    break L_cacheloop;
+                }
+            }
+        }
+        // fallback to system poll call if descriptor state is uncertain
+        if (uncertain) {
+            logf("Fallback to system poll, descriptors have uncertain state");
+            ssize_t p = raw_poll(fds, nfds, 0);
+            if (p != 0) {
+                result = p;
+                logf("Raw poll returns %d", result);
+                return true;
+            }
+        }
+        else {
+            ssize_t j = 0;
+            foreach (i; 0..nfds) {
+                if (fds[i].revents) {
+                    fds[j++] = fds[i];
+                }
+            }
+            logf("Using our own event cache: %d events", j);
+            if (j > 0) {
+                result = cast(ssize_t)j;
+                return true;
+            }
+        }
+        return false;
+    }
     if (currentFiber is null) {
         logf("POLL PASSTHROUGH!");
-        return cast(int)raw_poll(fds, nfds, timeout);
+        return raw_poll(fds, nfds, timeout);
     }
     else {
         logf("HOOKED POLL");
-        /*if (timeout <= 0) return sys_poll(fds, nfds, timeout);
-
-        foreach (ref fd; fds[0..nfds]) {
-            interceptFd(fd.fd);
-            descriptors[fd.fd].unshared.blockFiber(currentFiber, fd.events);
+        if (nfds < 0 ) return -EINVAL.withErrorno;
+        if (nfds == 0) return 0;
+        foreach(ref fd; fds[0..nfds]) {
+            if (fd.fd < 0 || fd.fd >= descriptors.length) return -EBADF.withErrorno;
+            fd.revents = 0;
         }
-        TimerFD tfd = timerFdPool.getObject();
-        int timerfd = tfd.getFD();
-        tfd.armTimer(timeout);
-        interceptFd(timerfd);
-        descriptors[timerfd].unshared.blockFiber(currentFiber, EPOLLIN);
+        ssize_t result = 0;
+        if (timeout <= 0) return raw_poll(fds, nfds, timeout);
+        if (nonBlockingCheck(result)) return result;
+        AwaitingFiber[] awaits = new AwaitingFiber[nfds]; //TODO: pool allocate
+        foreach (i; 0..nfds) {
+            awaits[i] = AwaitingFiber(cast(shared)currentFiber);
+            if (fds[i].events & POLLIN) {
+                descriptors[fds[i].fd].enqueueReader(cast(shared)awaits.ptr + i);
+            }
+            else if(fds[i].events & POLLOUT)
+                descriptors[fds[i].fd].enqueueWriter(cast(shared)awaits.ptr + i);
+        }
+        Timer tm = timer();
+        scope(exit) tm.dispose();
+        tm.arm(timeout);
+        shared AwaitingFiber aw = shared(AwaitingFiber)(cast(shared)currentFiber);
+        descriptors[tm.fd].enqueueReader(&aw);
         Fiber.yield();
-
-        timerFdPool.releaseObject(tfd);
-        foreach (ref fd; fds[0..nfds]) {
-            descriptors[fd.fd].unshared.removeFiber(currentFiber);
-        }*/
-
-        return cast(int)raw_poll(fds, nfds, 0);
+        tm.disam();
+        atomicStore(descriptors[tm.fd]._readerWaits, cast(shared(AwaitingFiber)*)null);
+        logf("Woke up after select %x. WakeFD=%d", cast(void*)currentFiber, currentFiber.wakeFd);
+        if (currentFiber.wakeFd == tm.fd) return 0;
+        else {
+            nonBlockingCheck(result);
+            return result;
+        }
     }
 }
 

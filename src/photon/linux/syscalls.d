@@ -180,7 +180,7 @@ int gettid()
 
 ssize_t raw_read(int fd, void *buf, size_t count) nothrow {
     logf("Raw read");
-    return syscall(SYS_READ, fd, cast(ssize_t) buf, cast(ssize_t) count);
+    return syscall(SYS_READ, fd, cast(ssize_t) buf, cast(ssize_t) count).withErrorno;
 }
 
 ssize_t raw_write(int fd, const void *buf, size_t count) nothrow
@@ -192,6 +192,6 @@ ssize_t raw_write(int fd, const void *buf, size_t count) nothrow
 ssize_t raw_poll(pollfd *fds, nfds_t nfds, int timeout)
 {
     logf("Raw poll");
-    return syscall(SYS_POLL, cast(size_t)fds, cast(size_t) nfds, timeout);
+    return syscall(SYS_POLL, cast(size_t)fds, cast(size_t) nfds, timeout).withErrorno;
 }
 
