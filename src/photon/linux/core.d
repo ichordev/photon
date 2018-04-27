@@ -573,7 +573,7 @@ ssize_t universalSyscall(size_t ident, string name, SyscallKind kind, Fcntl fcnt
         }
         static if(kind == SyscallKind.accept || kind == SyscallKind.read) {
             auto state = descriptor.readerState;
-            logf("%s syscall state is %d", name, state);
+            logf("%s syscall state is %d. Fiber %x", name, state, cast(void*)currentFiber);
             final switch (state) with (ReaderState) {
             case EMPTY:
                 logf("EMPTY - enqueue reader");
@@ -618,7 +618,7 @@ ssize_t universalSyscall(size_t ident, string name, SyscallKind kind, Fcntl fcnt
         else static if(kind == SyscallKind.write) {
             //TODO: Handle short-write b/c of EWOULDBLOCK to apear as fully blocking
             auto state = descriptor.writerState;
-            logf("%s syscall state is %d", name, state);
+            logf("%s syscall state is %d. Fiber %x", name, state, cast(void*)currentFiber);
             final switch (state) with (WriterState) {
             case FULL:
                 if (!descriptor.enqueueWriter(&await)) goto L_start;
