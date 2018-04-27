@@ -179,13 +179,13 @@ int gettid()
 }
 
 ssize_t raw_read(int fd, void *buf, size_t count) nothrow {
-    logf("Raw read");
+    logf("Raw read on FD=%d", fd);
     return syscall(SYS_READ, fd, cast(ssize_t) buf, cast(ssize_t) count).withErrorno;
 }
 
 ssize_t raw_write(int fd, const void *buf, size_t count) nothrow
 {
-    logf("Raw write");
+    logf("Raw write on FD=%d", fd);
     return syscall(SYS_WRITE, fd, cast(size_t) buf, count).withErrorno;
 }
 

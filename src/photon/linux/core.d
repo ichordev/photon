@@ -446,14 +446,15 @@ extern(C) void* processEventsEntry(void*)
             else {
                 auto descriptor = descriptors.ptr + fd;
                 if (descriptor.intercepted) {
-                    logf("Event for fd=%d", fd);
                     if (events[n].events & EPOLLIN) {
+                        logf("Read event for fd=%d", fd);
                         auto state = descriptor.readerState;
                         logf("state = %d", state);
                         final switch(state) with(ReaderState) { 
                             case EMPTY:
                                 descriptor.changeReader(EMPTY, READY);
                                 descriptor.scheduleReaders(fd);
+                                logf("Scheduled readers");
                                 break;
                             case UNCERTAIN:
                                 descriptor.changeReader(UNCERTAIN, READY);
@@ -471,6 +472,7 @@ extern(C) void* processEventsEntry(void*)
                         logf("Awaits %x", cast(void*)descriptor.readWaiters);
                     }
                     if (events[n].events & EPOLLOUT) {
+                        logf("Write event for fd=%d", fd);
                         auto state = descriptor.writerState;
                         logf("state = %d", state);
                         final switch(state) with(WriterState) { 
@@ -564,6 +566,7 @@ ssize_t universalSyscall(size_t ident, string name, SyscallKind kind, Fcntl fcnt
             logf("%s syscall state is %d", name, state);
             final switch (state) with (ReaderState) {
             case EMPTY:
+                logf("EMPTY - enqueue reader");
                 if (!descriptor.enqueueReader(&await)) goto L_start;
                 // changed state to e.g. READY or UNCERTAIN in meantime, may need to reschedule
                 if (descriptor.readerState != EMPTY) descriptor.scheduleReaders(fd);
@@ -667,7 +670,7 @@ extern(C) ssize_t accept4(int sockfd, sockaddr *addr, socklen_t *addrlen, int fl
 
 extern(C) ssize_t connect(int sockfd, const sockaddr *addr, socklen_t *addrlen)
 {
-    return universalSyscall!(SYS_CONNECT, "connect", SyscallKind.accept, Fcntl.explicit, EINPROGRESS)
+    return universalSyscall!(SYS_CONNECT, "connect", SyscallKind.connect, Fcntl.explicit, EINPROGRESS)
         (sockfd, cast(size_t) addr, cast(size_t) addrlen);
 }
 
