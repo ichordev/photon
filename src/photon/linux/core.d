@@ -288,14 +288,20 @@ enum WriterState: uint {
     FULL = 3
 }
 
+enum DescriptorState: uint {
+    NOT_INITED,
+    INITIALIZING,
+    NONBLOCKING,
+    THREADPOOL
+}
+
 // list of awaiting fibers
 shared struct Descriptor {
     ReaderState _readerState;   
     AwaitingFiber* _readerWaits;
     WriterState _writerState;
     AwaitingFiber* _writerWaits;
-    bool intercepted;
-    bool isSocket;
+    DescriptorState state;
 nothrow:
     ReaderState readerState()() {
         return atomicLoad(_readerState);
@@ -445,7 +451,7 @@ extern(C) void* processEventsEntry(void*)
             }
             else {
                 auto descriptor = descriptors.ptr + fd;
-                if (descriptor.intercepted) {
+                if (descriptor.state == DescriptorState.NONBLOCKING) {
                     if (events[n].events & EPOLLIN) {
                         logf("Read event for fd=%d", fd);
                         auto state = descriptor.readerState;
@@ -508,7 +514,7 @@ enum SyscallKind { accept, read, write }
 void interceptFd(Fcntl needsFcntl)(int fd) nothrow {
     logf("Hit interceptFD");
     if (fd < 0 || fd >= descriptors.length) return;
-    if (cas(&descriptors[fd].intercepted, false, true)) {
+    if (cas(&descriptors[fd].state, DescriptorState.NOT_INITED, DescriptorState.INITIALIZING)) {
         logf("First use, registering fd = %d", fd);
         static if(needsFcntl == Fcntl.explicit) {
             int flags = fcntl(fd, F_GETFL, 0);
@@ -518,14 +524,13 @@ void interceptFd(Fcntl needsFcntl)(int fd) nothrow {
         event.events = EPOLLIN | EPOLLOUT | EPOLLET;
         event.data.fd = fd;
         if (epoll_ctl(event_loop_fd, EPOLL_CTL_ADD, fd, &event) < 0 && errno == EPERM) {
-            logf("Detected real file FD, switching from epoll to aio");
-            descriptors[fd].isSocket = false;
+            logf("isSocket = false FD = %d", fd);
+            descriptors[fd].state = DescriptorState.THREADPOOL;
         }
         else {
-            logf("isSocket = true");
-            descriptors[fd].isSocket = true;
+            logf("isSocket = true FD = %d", fd);
+            descriptors[fd].state = DescriptorState.NONBLOCKING;
         }
-        descriptors[fd].intercepted = true;
     }
     int flags = fcntl(fd, F_GETFL, 0);
     if (!(flags & O_NONBLOCK)) {
@@ -540,7 +545,7 @@ void deregisterFd(int fd) nothrow {
         atomicStore(descriptor._readerState, ReaderState.EMPTY);
         descriptor.scheduleReaders(fd);
         descriptor.scheduleWriters(fd);
-        atomicStore(descriptor.intercepted, false);
+        atomicStore(descriptor.state, DescriptorState.NOT_INITED);
     }
 }
 
@@ -554,6 +559,11 @@ ssize_t universalSyscall(size_t ident, string name, SyscallKind kind, Fcntl fcnt
         logf("HOOKED %s FD=%d", name, fd);
         interceptFd!(fcntlStyle)(fd);
         shared(Descriptor)* descriptor = descriptors.ptr + fd;
+        if (atomicLoad(descriptor.state) == DescriptorState.THREADPOOL) {
+            logf("%s syscall THREADPOLL FD=%d", name, fd);
+            //TODO: offload syscall to thread-pool
+            return syscall(ident, fd, args).withErrorno;
+        }
     L_start:
         shared AwaitingFiber await = AwaitingFiber(cast(shared)currentFiber, null);
         // set flags argument if able to avoid direct fcntl calls
@@ -670,7 +680,7 @@ extern(C) ssize_t accept4(int sockfd, sockaddr *addr, socklen_t *addrlen, int fl
 
 extern(C) ssize_t connect(int sockfd, const sockaddr *addr, socklen_t *addrlen)
 {
-    return universalSyscall!(SYS_CONNECT, "connect", SyscallKind.connect, Fcntl.explicit, EINPROGRESS)
+    return universalSyscall!(SYS_CONNECT, "connect", SyscallKind.write, Fcntl.explicit, EINPROGRESS)
         (sockfd, cast(size_t) addr, cast(size_t) addrlen);
 }
 
@@ -814,7 +824,7 @@ extern(C) private ssize_t poll(pollfd *fds, nfds_t nfds, int timeout)
 
 extern(C) private ssize_t close(int fd) nothrow
 {
-    logf("HOOKED CLOSE!");
+    logf("HOOKED CLOSE FD=%d", fd);
     deregisterFd(fd);
     return cast(int)withErrorno(syscall(SYS_CLOSE, fd));
 }
