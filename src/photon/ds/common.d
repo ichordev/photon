@@ -14,3 +14,18 @@ interface WorkQueue(T) {
     shared T pop(); // blocks if empty
     shared bool tryPop(ref T item); // non-blocking
 }
+
+// intrusive list helper
+T removeFromList(T)(T head, T item) {
+	if (head == item) return head.next;
+	else {
+		auto p = head;
+		while(p.next) {
+			if (p.next == item)
+				p.next = item.next;
+			else 
+				p = p.next;
+		}
+		return head;
+	}
+}

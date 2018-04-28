@@ -256,14 +256,17 @@ package(photon) void schedulerEntry(size_t n)
 
 public void spawn(void delegate() func) {
     import std.random;
-    uint a = uniform!"[)"(0, cast(uint)scheds.length);
-    uint b = uniform!"[)"(0, cast(uint)scheds.length-1);
-    if (a == b) b = cast(uint)scheds.length-1;
-    uint loadA = scheds[a].assigned;
-    uint loadB = scheds[b].assigned;
     uint choice;
-    if (loadA < loadB) choice = a;
-    else choice = b;
+    if (scheds.length == 1) choice = 0;
+    else {
+        uint a = uniform!"[)"(0, cast(uint)scheds.length);
+        uint b = uniform!"[)"(0, cast(uint)scheds.length-1);
+        if (a == b) b = cast(uint)scheds.length-1;
+        uint loadA = scheds[a].assigned;
+        uint loadB = scheds[b].assigned;
+        if (loadA < loadB) choice = a;
+        else choice = b;
+    }
     atomicOp!"+="(scheds[choice].assigned, 1);
     atomicOp!"+="(alive, 1);
     auto f = new FiberExt(func, choice);
@@ -338,11 +341,25 @@ nothrow:
         return cas(&_readerWaits, head, fiber);
     }
 
+    void removeReader()(shared(AwaitingFiber)* fiber) {
+        auto head = steal(_readerWaits);
+        if (head is null || head.next is null) return;
+        head = removeFromList(head.unshared, fiber);
+        cas(&_readerWaits, head, cast(shared(AwaitingFiber*))null);
+    }
+
     // try to enqueue writer fiber given old head
     bool enqueueWriter()(shared(AwaitingFiber)* fiber) {
         auto head = writeWaiters;
         fiber.next = head;
         return cas(&_writerWaits, head, fiber);
+    }
+
+    void removeWriter()(shared(AwaitingFiber)* fiber) {
+        auto head = steal(_writerWaits);
+        if (head is null || head.next is null) return;
+        head = removeFromList(head.unshared, fiber);
+        cas(&_writerWaits, head, cast(shared(AwaitingFiber*))null);
     }
 
     // try to schedule readers - if fails - someone added a reader, it's now his job to check state
@@ -455,9 +472,10 @@ extern(C) void* processEventsEntry(void*)
                     if (events[n].events & EPOLLIN) {
                         logf("Read event for fd=%d", fd);
                         auto state = descriptor.readerState;
-                        logf("state = %d", state);
+                        logf("read state = %d", state);
                         final switch(state) with(ReaderState) { 
                             case EMPTY:
+                                logf("Trying to schedule readers");
                                 descriptor.changeReader(EMPTY, READY);
                                 descriptor.scheduleReaders(fd);
                                 logf("Scheduled readers");
@@ -480,7 +498,7 @@ extern(C) void* processEventsEntry(void*)
                     if (events[n].events & EPOLLOUT) {
                         logf("Write event for fd=%d", fd);
                         auto state = descriptor.writerState;
-                        logf("state = %d", state);
+                        logf("write state = %d", state);
                         final switch(state) with(WriterState) { 
                             case FULL:
                                 descriptor.changeWriter(FULL, READY);
@@ -508,7 +526,7 @@ extern(C) void* processEventsEntry(void*)
 }
 
 enum Fcntl: int { explicit = 0, msg = MSG_DONTWAIT, sock = SOCK_NONBLOCK, noop = 0xFFFFF }
-enum SyscallKind { accept, read, write }
+enum SyscallKind { accept, read, write, connect }
 
 // intercept - a filter for file descriptor, changes flags and register on first use
 void interceptFd(Fcntl needsFcntl)(int fd) nothrow {
@@ -615,8 +633,8 @@ ssize_t universalSyscall(size_t ident, string name, SyscallKind kind, Fcntl fcnt
                 return withErrorno(resp);
             }
         }
-        else static if(kind == SyscallKind.write) {
-            //TODO: Handle short-write b/c of EWOULDBLOCK to apear as fully blocking
+        else static if(kind == SyscallKind.write || kind == SyscallKind.connect) {
+            //TODO: Handle short-write b/c of EWOULDBLOCK to apear as fully blocking?
             auto state = descriptor.writerState;
             logf("%s syscall state is %d. Fiber %x", name, state, cast(void*)currentFiber);
             final switch (state) with (WriterState) {
@@ -634,16 +652,34 @@ ssize_t universalSyscall(size_t ident, string name, SyscallKind kind, Fcntl fcnt
                 goto case WRITING;
             case WRITING:
                 ssize_t resp = syscall(ident, fd, args);
-                if (resp == args[1]) // (buf, len) args to syscall
-                    descriptor.changeWriter(WRITING, UNCERTAIN);
-                else if(resp >= 0)
-                    descriptor.changeWriter(WRITING, FULL);
-                else if (resp == -ERR || resp == -EAGAIN) {
-                    if (descriptor.changeWriter(WRITING, FULL))
-                        goto case FULL;
-                    goto L_start; // became UNCERTAIN or READY in meantime
+                static if (kind == SyscallKind.connect) {
+                    if(resp >= 0) {
+                        descriptor.changeWriter(WRITING, READY);
+                    }
+                    else if (resp == -ERR || resp == -EAGAIN) {
+                        if (descriptor.changeWriter(WRITING, FULL)) {
+                            goto case FULL;
+                        }
+                        goto L_start; // became UNCERTAIN or READY in meantime
+                    }
+                    return withErrorno(resp);
                 }
-                return withErrorno(resp);
+                else {
+                    if (resp == args[1]) // (buf, len) args to syscall
+                        descriptor.changeWriter(WRITING, UNCERTAIN);
+                    else if(resp >= 0) {
+                        logf("Short-write on FD=%d, become FULL", fd);
+                        descriptor.changeWriter(WRITING, FULL);
+                    }
+                    else if (resp == -ERR || resp == -EAGAIN) {
+                        if (descriptor.changeWriter(WRITING, FULL)) {
+                            logf("Sudden block on FD=%d, become FULL", fd);
+                            goto case FULL;
+                        }
+                        goto L_start; // became UNCERTAIN or READY in meantime
+                    }
+                    return withErrorno(resp);
+                }
             }
         }
         assert(0);
@@ -680,7 +716,7 @@ extern(C) ssize_t accept4(int sockfd, sockaddr *addr, socklen_t *addrlen, int fl
 
 extern(C) ssize_t connect(int sockfd, const sockaddr *addr, socklen_t *addrlen)
 {
-    return universalSyscall!(SYS_CONNECT, "connect", SyscallKind.write, Fcntl.explicit, EINPROGRESS)
+    return universalSyscall!(SYS_CONNECT, "connect", SyscallKind.connect, Fcntl.explicit, EINPROGRESS)
         (sockfd, cast(size_t) addr, cast(size_t) addrlen);
 }
 
@@ -796,23 +832,26 @@ extern(C) private ssize_t poll(pollfd *fds, nfds_t nfds, int timeout)
         ssize_t result = 0;
         if (timeout <= 0) return raw_poll(fds, nfds, timeout);
         if (nonBlockingCheck(result)) return result;
-        AwaitingFiber[] awaits = new AwaitingFiber[nfds]; //TODO: pool allocate
+        shared AwaitingFiber aw = shared(AwaitingFiber)(cast(shared)currentFiber);
         foreach (i; 0..nfds) {
-            awaits[i] = AwaitingFiber(cast(shared)currentFiber);
-            if (fds[i].events & POLLIN) {
-                descriptors[fds[i].fd].enqueueReader(cast(shared)awaits.ptr + i);
-            }
+            if (fds[i].events & POLLIN)
+                descriptors[fds[i].fd].enqueueReader(&aw);
             else if(fds[i].events & POLLOUT)
-                descriptors[fds[i].fd].enqueueWriter(cast(shared)awaits.ptr + i);
+                descriptors[fds[i].fd].enqueueWriter(&aw);
         }
         Timer tm = timer();
         scope(exit) tm.dispose();
         tm.arm(timeout);
-        shared AwaitingFiber aw = shared(AwaitingFiber)(cast(shared)currentFiber);
         descriptors[tm.fd].enqueueReader(&aw);
         Fiber.yield();
         tm.disam();
         atomicStore(descriptors[tm.fd]._readerWaits, cast(shared(AwaitingFiber)*)null);
+        foreach (i; 0..nfds) {
+            if (fds[i].events & POLLIN)
+                descriptors[fds[i].fd].removeReader(&aw);
+            else if(fds[i].events & POLLOUT)
+                descriptors[fds[i].fd].removeWriter(&aw);
+        }
         logf("Woke up after select %x. WakeFD=%d", cast(void*)currentFiber, currentFiber.wakeFd);
         if (currentFiber.wakeFd == tm.fd) return 0;
         else {
