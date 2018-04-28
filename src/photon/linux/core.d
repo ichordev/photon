@@ -270,6 +270,7 @@ public void spawn(void delegate() func) {
     atomicOp!"+="(scheds[choice].assigned, 1);
     atomicOp!"+="(alive, 1);
     auto f = new FiberExt(func, choice);
+    logf("Assigned %x -> %d scheduler", cast(void*)f, choice);
     f.schedule();
 }
 
@@ -550,10 +551,6 @@ void interceptFd(Fcntl needsFcntl)(int fd) nothrow {
             descriptors[fd].state = DescriptorState.NONBLOCKING;
         }
     }
-    int flags = fcntl(fd, F_GETFL, 0);
-    if (!(flags & O_NONBLOCK)) {
-        logf("WARNING: Socket (%d) not set in O_NONBLOCK mode!", fd);
-    }
 }
 
 void deregisterFd(int fd) nothrow {
@@ -639,12 +636,14 @@ ssize_t universalSyscall(size_t ident, string name, SyscallKind kind, Fcntl fcnt
             logf("%s syscall state is %d. Fiber %x", name, state, cast(void*)currentFiber);
             final switch (state) with (WriterState) {
             case FULL:
+                logf("FULL FD=%d Fiber %x", fd, cast(void*)currentFiber);
                 if (!descriptor.enqueueWriter(&await)) goto L_start;
                 // changed state to e.g. READY or UNCERTAIN in meantime, may need to reschedule
                 if (descriptor.writerState != FULL) descriptor.scheduleWriters(fd);
                 FiberExt.yield();
                 goto L_start;
             case UNCERTAIN:
+                logf("UNCERTAIN on FD=%d Fiber %x", fd, cast(void*)currentFiber);
                 descriptor.changeWriter(UNCERTAIN, WRITING); // may became READY or WRITING
                 goto case WRITING;
             case READY:
@@ -656,7 +655,7 @@ ssize_t universalSyscall(size_t ident, string name, SyscallKind kind, Fcntl fcnt
                     if(resp >= 0) {
                         descriptor.changeWriter(WRITING, READY);
                     }
-                    else if (resp == -ERR || resp == -EAGAIN) {
+                    else if (resp == -ERR || resp == -EALREADY) {
                         if (descriptor.changeWriter(WRITING, FULL)) {
                             goto case FULL;
                         }
