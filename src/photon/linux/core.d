@@ -49,7 +49,7 @@ nothrow:
     }
 
     void waitAndReset() {
-        ubyte[8] bytes = void;
+        byte[8] bytes = void;
         ssize_t r;
         do {
             r = raw_read(fd, bytes.ptr, 8);

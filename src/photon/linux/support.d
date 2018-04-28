@@ -18,7 +18,6 @@ extern(C) void perror(const(char) *s) nothrow;
 T checked(T: ssize_t)(T value, const char* msg="unknown place") nothrow {
     if (value < 0) {
         perror(msg);
-        *cast(ubyte*)0x0 = 42;
         _exit(cast(int)-value);
     }
     return value;
