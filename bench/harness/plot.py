@@ -40,4 +40,4 @@ for i in tqdm(range(len(http))):
     results[READ][i] = slice[READ].agg('sum')
     results[WRITE][i] = slice[WRITE].agg('sum')
 
-print(results)
+results.to_csv(destArg)

@@ -722,7 +722,7 @@ extern(C) ssize_t connect(int sockfd, const sockaddr *addr, socklen_t *addrlen)
 extern(C) ssize_t sendto(int sockfd, const void *buf, size_t len, int flags,
                       const sockaddr *dest_addr, socklen_t addrlen)
 {
-    return universalSyscall!(SYS_SENDTO, "sendto", SyscallKind.read, Fcntl.msg, EWOULDBLOCK)
+    return universalSyscall!(SYS_SENDTO, "sendto", SyscallKind.write, Fcntl.explicit, EWOULDBLOCK)
         (sockfd, cast(size_t) buf, len, flags, cast(size_t) dest_addr, cast(size_t) addrlen);
 }
 

@@ -10,7 +10,7 @@ import std.getopt, std.array, std.algorithm, std.numeric,
     std.stdio, std.process, std.regex;
 
 void usage() {
-    stderr.writeln("Usage: http_load START-STOP:STEP REQ[A]xRUNS http://server[:port]/path");
+    stderr.writeln("Usage: http_load START-STOP:STEP TIMExRUNS http://server[:port]/path");
 }
 
 long fromMetric(string num) {
@@ -50,45 +50,60 @@ int main(string[] argv) {
     long start = fromMetric(m[1]);
     long stop = fromMetric(m[2]);
     long step = fromMetric(m[3]);
-    auto m2 = matchFirst(argv[2], `^(\d+(?:[km]?))([A]?)x(\d+)$`);
+    auto m2 = matchFirst(argv[2], `^(\d+)x(\d+)$`);
     if (!m2) {
         stderr.writeln("Can't parse 'runs' argument:", argv[2]);
         usage();
         return 1;
     }
-    int numThreads = coresPerCPU;
-    long req = fromMetric(m2[1]);
-    bool keepAlive = m2[2] == "A";
-    int runs = m2[3].to!int;
-    writefln("time,concurrency,RPS(min),RPS(avg),RPS(max),errors(max)");
+    int numThreads = threadsPerCPU;
+    int time = m2[1].to!int;
+    int runs = m2[2].to!int;
+    writefln("time,concurrency,RPS(min),RPS(avg),RPS(max),errors(max),lat(75%%),lat(99%%)");
     for(long c = start; c <= stop; c += step) {
         c = c / step * step; // truncate to step
         if (c < numThreads) c = numThreads;     
         auto dt = Clock.currTime();   
-        long[] rps = new long[runs];
+        double[] rps = new double[runs];
+        double[] perc75 = new double[runs];
+        double[] perc99 = new double[runs];
         long[] errors = new long[runs];
         foreach(r; 0..runs) {
-            auto cmd = ["weighttp", "-c", c.to!string, "-t", numThreads.to!string, "-n", req.to!string, url];
-            if (keepAlive) cmd.insertInPlace(1, "-k");
+            double multiplier(const(char)[] s){
+                if (s == "") return 1;
+                else if(s == "u") return 1e-6;
+                else if(s == "m") return 1e-3;
+                else throw new Exception("Unknown multiplier " ~ s.to!string);
+            }
+            auto cmd = ["wrk", "--latency", "-c", c.to!string, "-t", numThreads.to!string, "-d", time.to!string, url];
             if(trace) stderr.writeln(cmd.join(" "));
             auto pipes = pipeProcess(cmd);
             foreach (line; pipes.stdout.byLine) {
-                auto result = matchFirst(line, `finished in .*?, (\d+) req/s`);
+                auto result = matchFirst(line, `Socket errors: connect (\d+), read (\d+), write (\d+), timeout (\d+)`);
                 if(result) {
-                    rps[r] = result[1].to!long;
+                    errors[r] = result[1].to!long + result[2].to!long + result[3].to!long + result[4].to!long;
                 }
-                result = matchFirst(line, `requests: .*? (\d+) failed, (\d+) errored`);
+                result = matchFirst(line, `Requests/sec:\s*([\d.]+)`);
                 if (result) {
-                    errors[r] = result[1].to!long + result[2].to!long;
+                    rps[r] = result[1].to!double;
+                }
+                result = matchFirst(line, `75%\s*([\d.]+)([mu])?s`);
+                if (result) {
+                    perc75[r] = result[1].to!double * multiplier(result[2]);
+                }
+                result = matchFirst(line, `99%\s*([\d.]+)([mu])?s`);
+                if (result) {
+                    perc99[r] = result[1].to!double * multiplier(result[2]);
                 }
             }
             if (wait(pipes.pid)) {
-                stderr.writeln("weighttp failed, stopping benchmark");
+                stderr.writeln("wrk failed, stopping benchmark");
                 return 1;
             }
         }
-        writefln("%s,%d,%d,%d,%d,%d",
-            dt.toISOExtString, c, reduce!(min)(rps), mean(rps).to!long, reduce!max(rps), reduce!max(errors));
+        writefln("%s,%d,%f,%f,%f,%d,%f,%f",
+            dt.toISOExtString, c, reduce!(min)(rps), mean(rps), reduce!max(rps), 
+            reduce!max(errors), mean(perc75), mean(perc99));
         stdout.flush();
         Thread.sleep(100.msecs);
     }
