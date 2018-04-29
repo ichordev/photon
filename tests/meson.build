@@ -14,9 +14,9 @@ memcached_dep = declare_dependency(
 	link_args: '-lmemached'
 )
 
-executable('memcached-test',
-	sources: ['memcached_test.d'],
-	dependencies: [photon_dep, memcached_dep],
-	install: true,
-	build_by_default: false,
-)
+# executable('memcached-test',
+# 	sources: ['memcached_test.d'],
+# 	dependencies: [photon_dep, memcached_dep],
+# 	install: true,
+# 	build_by_default: false,
+# )

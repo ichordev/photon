@@ -13,10 +13,12 @@ import photon;
 import utils.http_server;
 
 class HelloWorldProcessor : HttpProcessor {
+    HttpHeader[] headers = [HttpHeader("Content-Type", "text/plain; charset=utf-8")];
+
     this(Socket sock){ super(sock); }
     
     override void onComplete(HttpRequest req) {
-        respondWith("Hello, world!", 200);
+        respondWith("Hello, world!", 200, headers);
     }
 }
 

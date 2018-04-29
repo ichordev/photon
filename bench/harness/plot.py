@@ -2,31 +2,42 @@
 import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
+from datetime import datetime
 import sys
+from tqdm import tqdm
 
-http = sys.argv[1]
-res = sys.argv[2]
+RSS = 'RSS(MB)'
+READ = 'read(MB)'
+WRITE = 'written(MB)'
+USER = 'user cpu time(sec)'
+KERNEL = 'kernel cpu time(sec)'
+NAMES = [RSS, READ, WRITE, USER, KERNEL]
 
-http_stats = pd.read_csv(http)
-resources = pd.read_csv(res)
+httpArg = sys.argv[1]
+resArg = sys.argv[2]
+destArg = sys.argv[3]
 
-http_stats['time'] = pd.to_datetime(http_stats['time'])
-resources['time'] = pd.to_datetime(resources['time'])
+http = pd.read_csv(httpArg)
+res = pd.read_csv(resArg)
 
-http = list(http_stats)
-res = list(resources)
+http['time'] = pd.to_datetime(http['time'])
+res['time'] = pd.to_datetime(res['time'])
 
-print(http[0])
-print(res[0])
+results = http.copy()
+for n in NAMES:
+    results[n] = pd.Series(0,index=np.arange(len(http)), dtype=np.float64)
 
-res_slices = []
-for i in range(len(http)):
-	slice = []
-	for j in range(len(resources)):
-		start = res[0]['time'] if i > 0 else http[i - 1]['time']
-		if res[j] > start and res[j] < http[i]['time']:
-			slice.append(res[j])
-	res_slices.append(slice)
+for i in tqdm(range(len(http))):
+    start = http['time'][i]
+    if i != len(http) - 1:
+        end = http['time'][i+1]
+        slice = res[(res['time'] > start) & (res['time'] < end)]
+    else:
+        slice = res[(res['time'] > start)]
+    results[RSS][i] = slice[RSS].agg('max')
+    results[USER][i] = slice[USER].agg('sum')
+    results[KERNEL][i] = slice[KERNEL].agg('sum')
+    results[READ][i] = slice[READ].agg('sum')
+    results[WRITE][i] = slice[WRITE].agg('sum')
 
-for i in range(len(http)):
-	print(http[i], len(res_slices))
+print(results)
