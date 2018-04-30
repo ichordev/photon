@@ -34,11 +34,10 @@ import photon.ds.intrusive_queue;
 // T becomes thread-local b/c it's stolen from shared resource
 auto steal(T)(ref shared T arg)
 {
-    auto v = atomicLoad(arg);
-    if (v !is null && cas(&arg, v, cast(shared(T))null)) {
-        return v;
+    for (;;) {
+        auto v = atomicLoad(arg);
+        if(cas(&arg, v, cast(shared(T))null)) return v;
     }
-    return null;
 }
 
 
