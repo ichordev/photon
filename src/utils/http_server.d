@@ -3,6 +3,7 @@
 module utils.http_server;
 import std.array, std.datetime, std.exception, std.format, std.algorithm.mutation, std.socket;
 import core.stdc.stdlib;
+import core.thread, core.atomic;
 import utils.http_parser;
 
 struct HttpHeader {
@@ -14,6 +15,41 @@ struct HttpRequest {
 	HttpMethod method;
 	const(char)[] uri;
 }
+
+shared bool httpServing = true;
+shared const(char)[]* httpDate;
+shared Thread httpDateThread;
+
+shared static this(){
+    Appender!(char[])[2] bufs;
+    const(char)[][2] targets;
+    {
+        auto date = Clock.currTime!(ClockType.coarse)(UTC());
+        size_t sz = writeDateHeader(bufs[0], date);
+        targets[0] = bufs[0].data;
+        atomicStore(httpDate, cast(shared)&targets[0]);
+    }
+    httpDateThread = new Thread({
+        size_t cur = 1;
+        while(httpServing){ 
+            bufs[cur].clear();
+            auto date = Clock.currTime!(ClockType.coarse)(UTC());
+            auto tmp = bufs[cur];
+            size_t sz = writeDateHeader(bufs[cur], date);
+            targets[cur] = cast(const)bufs[cur].data;
+            atomicStore(httpDate, cast(shared)&targets[cur]);
+            cur = 1 - cur;
+            Thread.sleep(250.msecs);
+        }
+    });
+    (cast()httpDateThread).start(); 
+}
+
+shared static ~this(){
+    atomicStore(httpServing, false);
+    (cast()httpDateThread).join();
+}
+
 
 abstract class HttpProcessor {
 private:
@@ -72,8 +108,10 @@ public:
             "HTTP/1.1 %s OK\r\n", status
         );
         outBuf.put("Server: photon/simple\r\n");
-        auto date = Clock.currTime!(ClockType.coarse)(UTC());
-        writeDateHeader(outBuf, date);
+        //auto date = Clock.currTime!(ClockType.coarse)(UTC());
+        //writeDateHeader(outBuf, date);
+        auto date = cast()atomicLoad(httpDate);
+        outBuf.put(*date);
         if (!parser.shouldKeepAlive) outBuf.put("Connection: close\r\n");
         foreach(ref hdr; headers) {
         	outBuf.put(hdr.name);
@@ -254,10 +292,10 @@ string monthAsString(Month month){
     }
 }
 
-void writeDateHeader(Output, D)(ref Output sink, D date){
+size_t writeDateHeader(Output, D)(ref Output sink, D date){
     string weekDay = dayAsString(date.dayOfWeek);
     string month = monthAsString(date.month);
-    formattedWrite(sink,
+    return formattedWrite(sink,
         "Date: %s, %02s %s %04s %02s:%02s:%02s GMT\r\n",
         weekDay, date.day, month, date.year,
         date.hour, date.minute, date.second
