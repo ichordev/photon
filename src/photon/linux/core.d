@@ -338,6 +338,9 @@ nothrow:
     // try to enqueue reader fiber given old head
     bool enqueueReader()(shared(AwaitingFiber)* fiber) {
         auto head = readWaiters;
+        if (head == fiber) {
+            *cast(ubyte*)0x42 = 1;
+        }
         fiber.next = head;
         return cas(&_readerWaits, head, fiber);
     }
@@ -352,6 +355,9 @@ nothrow:
     // try to enqueue writer fiber given old head
     bool enqueueWriter()(shared(AwaitingFiber)* fiber) {
         auto head = writeWaiters;
+        if (head == fiber) {
+            *cast(ubyte*)0x42 = 1;
+        }
         fiber.next = head;
         return cas(&_writerWaits, head, fiber);
     }

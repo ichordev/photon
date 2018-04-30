@@ -14,10 +14,10 @@ CLIENTNODE=$5
 NAME=$6
 shift 6
 
-ssh $SERVNODE rusage 0.05:$NAME-res.csv "$@" &
+ssh $SERVNODE ./unlimited.sh rusage 0.05:$NAME-res.csv "$@" &
 SERV=$!
 sleep 1
-ssh $CLIENTNODE http_load $RANGE $RUNS http://$SERVNODELOCAL:8080 > $NAME-http.csv &
+ssh $CLIENTNODE ./unlimited.sh http_load $RANGE $RUNS http://$SERVNODELOCAL:8080 > $NAME-http.csv &
 HTTP=$!
 wait $HTTP
 kill -INT $SERV
