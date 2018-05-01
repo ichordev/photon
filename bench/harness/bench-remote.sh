@@ -21,6 +21,5 @@ ssh $CLIENTNODE ./unlimited.sh http_load $RANGE $RUNS http://$SERVNODELOCAL:8080
 HTTP=$!
 wait $HTTP
 kill -INT $SERV
-kill -INT $TAIL
 rsync $SERVNODE:$NAME-res.csv
 wait

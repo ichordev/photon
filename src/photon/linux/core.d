@@ -539,20 +539,21 @@ void interceptFd(Fcntl needsFcntl)(int fd) nothrow {
     logf("Hit interceptFD");
     if (fd < 0 || fd >= descriptors.length) return;
     if (cas(&descriptors[fd].state, DescriptorState.NOT_INITED, DescriptorState.INITIALIZING)) {
-        logf("First use, registering fd = %d", fd);
+        logf("First use, registering fd = %s", fd);
         static if(needsFcntl == Fcntl.explicit) {
             int flags = fcntl(fd, F_GETFL, 0);
             fcntl(fd, F_SETFL, flags | O_NONBLOCK).checked;
+            logf("Setting FCNTL. %x", cast(void*)currentFiber);
         }
         epoll_event event;
         event.events = EPOLLIN | EPOLLOUT | EPOLLET;
         event.data.fd = fd;
         if (epoll_ctl(event_loop_fd, EPOLL_CTL_ADD, fd, &event) < 0 && errno == EPERM) {
-            logf("isSocket = false FD = %d", fd);
+            logf("isSocket = false FD = %s", fd);
             descriptors[fd].state = DescriptorState.THREADPOOL;
         }
         else {
-            logf("isSocket = true FD = %d", fd);
+            logf("isSocket = true FD = %s", fd);
             descriptors[fd].state = DescriptorState.NONBLOCKING;
         }
     }
@@ -591,6 +592,8 @@ ssize_t universalSyscall(size_t ident, string name, SyscallKind kind, Fcntl fcnt
         {
             args[2] |= fcntlStyle;
         }
+        //if (kind == SyscallKind.accept)
+        logf("kind:s args:%s", kind, args);
         static if(kind == SyscallKind.accept || kind == SyscallKind.read) {
             auto state = descriptor.readerState;
             logf("%s syscall state is %d. Fiber %x", name, state, cast(void*)currentFiber);
