@@ -61,16 +61,3 @@ For benchmarking we use [weighttp](https://github.com/lighttpd/weighttp) as well
 Simply clone the repo and `make libdfio.so`.
 By default we use the dmd compiler, however benchmarks have shown the ldc compiler to be better suited for our tests. To change the compiler simply edit the DC variable:
 `make libdfio.so DC=ldmd2`
-
-### Benchmarking
-
-Before running the benchmarks some kernel limits might need to be increased, we suggest at least the following lines to be added in /etc/sysctl.conf:
-```
-fs.file-max = 500000
-net.core.somaxconn = 100000
-net.ipv4.ip_local_port_range = 10000 60000
-```
-
-To test our lib we decided to use a simple http server which serves some basic requests. Currently we testes against the goland and nodeJS equivalent with promising results.
-
-To run each benchmark and plot the results simply run the desired `make simple-bench*` command. The plots can be found in dfio/bench/results, this folder already contains some samples benchmarks generated on an Intel(R) Core(TM) i7-6700 CPU @ 3.40GHz.
