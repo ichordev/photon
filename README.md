@@ -2,7 +2,15 @@
 
 ## Intro
 
-The goal of the project is to transparently enable the model of "pseudosynchronous" I/O (popularized by Go language) for all of D libraries and even most of C libraries. It combines the scalability of asynchronous I/O with simple programming model of synchronous I/O.
+Photon is a minimalistic multi-threaded fiber scheduler and event loop that works transparently with traditional blocking I/O C/C++/D/Rust libraries w/o degrading performance. For example one can run multituide of downloads with `std.net.curl` with fibers, no blocking - it is as fast as threads but using less resources.
+
+Just like its particle cousing, Photon’s nature is dual, seeking to unify 2 different concepts (such as async and blocking I/O) in many ways:
+Fibers and Threads can be mixed and matched in coherent way (named as light thread and heavy thread respectively)
+LibC syscall wrapper is overriden to be aware of D fiber scheduling and transparently uses the same eventloop if called on fiber and is passed through otherwise
+Explicit async model with tasks/futures is integrated with pseudoblocking fiber scheduling
+D Ranges with asynchronous event streams are natural extension
+
+## Blocking, async and pseudo-blocking
 
 In short, there are roughly 3 ways (glossing over OS specific abilities) to tackle I/O.
 
@@ -17,8 +25,6 @@ There are oversimplifications in the above introductions. In particular on Linux
 Go language would be a remarkably popular example of 3rd option - Goroutines are green threads that get scheduled (mapped) to a handful of OS threads in the language runtime.
 
 C# and Dart would be an examples of 2nd option - language extension to tackle explicit asynchronous I/O (and not only I/O). Many other languages follow suit.
-
-## Problem statement
 
 Current situation with I/O in DLang looks roughly like the following diagram. Due to D's ability to call into arbitrary C libraries we have the full Zoo of options without any of the benefits. To be specific we have normal synchronous I/O in std library (std.socket etc.), fiber-based I/O scheduling as an opt-in library, sometimes explicit async I/O of kind in 3rd party C libraries and synchronous I/O in the general mass of C libraries.
 
@@ -41,23 +47,9 @@ The end result is a brittle ecosystem where even if you have a 3rd party "driver
 
 ## Solution
 
-This project is attempting a bold approach to solve this problem once and for all:
-1. Introduce event loop and green threads as unescapable component initialized at start up or lazily (no separate opt-in library as in vibe.d).
-2. Replace the libc syscall wrapper so that any blocking call relying on it (which is next to all) is transparently rewired to go through pseudoblocking runtime. All 3rd party libraries do fiber-aware pseudoblocking I/O automatically.
-3. The rest of the libraries that do explicit async I/O stay as their are, their syscall are passed through. In the future we will intercept them as well to re-route to our eventloop, basically emulating the likes of `select`, `poll` and `epoll` in user-space by reusing the same event cache.
-4. Finally vibe.d may produce a thin-shelled version that forward all of calls to blocking I/O to reuse our scheduler.
+This project is going for a bold approach to solve this problem once and for all:
+1. Replacing the libc syscall wrapper so that any blocking call relying on it (which is next to all) is transparently rewired to go through pseudoblocking runtime. All 3rd party libraries do fiber-aware pseudoblocking I/O automatically.
+2. The rest of the libraries that do explicit async I/O stay as their are, their syscall are passed through. In the future we will intercept them as well to re-route to our eventloop, basically emulating the likes of `select`, `poll` and `epoll` in user-space by reusing the same event cache.
+3. Finally vibe.d may produce a thin-shelled version that forward all of calls to blocking I/O to reuse our scheduler.
 
 Note: the approach of overriding underlying libc facilities is not something new or uncalled for, e.g. jemalloc does it fitfully to replace default libc memory allocator.
-
-## Setup
-
-### Prerequisites
-
-Building the library requires the dlang compilers & friends: dmd, ldc and ldmd2.
-For benchmarking we use [weighttp](https://github.com/lighttpd/weighttp) as well.
-
-### Building the library
-
-Simply clone the repo and `make libdfio.so`.
-By default we use the dmd compiler, however benchmarks have shown the ldc compiler to be better suited for our tests. To change the compiler simply edit the DC variable:
-`make libdfio.so DC=ldmd2`
