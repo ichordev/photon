@@ -1,4 +1,4 @@
-# Photon - a transparent lightweight fiber scheduler for the D Language
+# Photon - a transparent lightweight fiber scheduler
 
 ## Intro
 
