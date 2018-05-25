@@ -1,4 +1,4 @@
-# D Fiber scheduler project
+# Photon - a transparent lightweight fiber scheduler for the D Language
 
 ## Intro
 
