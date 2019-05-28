@@ -19,7 +19,7 @@ photon_common = [
 	'photon/ds/blocking_queue.d'
 ]
 
-photon = shared_library('photon',
+photon = static_library('photon',
     sources: photon_common + photon_linux,
     version: version,
     install: true,
@@ -31,7 +31,7 @@ photon_dep = declare_dependency(
 	link_with: photon
 )
 
-utils = library('utils',
+utils = static_library('utils',
     ['utils/http_parser.d', 'utils/http_server.d', 'utils/http.c'],
     dependencies: http_dep
 )
