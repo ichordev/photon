@@ -21,7 +21,6 @@ photon_common = [
 
 photon = static_library('photon',
     sources: photon_common + photon_linux,
-    version: version,
     install: true,
     build_by_default: true
 )
