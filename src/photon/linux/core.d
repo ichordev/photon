@@ -98,7 +98,7 @@ nothrow:
         timerfd_settime(timerfd, 0, &its, null);
     }
 
-    void disam() {
+    void disarm() {
         itimerspec its; // zeros
         timerfd_settime(timerfd, 0, &its, null);
     }
@@ -851,7 +851,7 @@ extern(C) private ssize_t poll(pollfd *fds, nfds_t nfds, int timeout)
         tm.arm(timeout);
         descriptors[tm.fd].enqueueReader(&aw);
         Fiber.yield();
-        tm.disam();
+        tm.disarm();
         atomicStore(descriptors[tm.fd]._readerWaits, cast(shared(AwaitingFiber)*)null);
         foreach (i; 0..nfds) {
             if (fds[i].events & POLLIN)
