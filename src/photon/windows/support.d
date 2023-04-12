@@ -1,5 +1,5 @@
 module photon.windows.support;
-
+version(Windows):
 import core.sys.windows.core;
 
 //opaque structs

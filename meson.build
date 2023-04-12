@@ -1,4 +1,4 @@
-project('Photon Libary', 'd',
+project('photon', 'd',
     meson_version : '>=0.44',
     subproject_dir : '3rd-party',
     license : 'Boost',
@@ -13,6 +13,14 @@ http_dep = declare_dependency(
 	link_with: http_parser_sp.get_variable('lib'),
 	include_directories: include_directories('3rd-party/http-parser'))
 
+dlang = import('dlang')
+dlang.generate_dub_file(meson.project_name().to_lower(), meson.source_root(),
+                        authors: ['Dmitry Olshansky'],
+                        description: 'Photon - a transparent fiber scheduler',
+                        copyright: 'Copyright © 2023, Dmitry Olshansky',
+                        license: 'BOOST',
+                        targetType: 'library'
+)
 
 subdir('src')
 

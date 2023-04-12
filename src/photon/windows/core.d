@@ -1,4 +1,5 @@
 module photon.windows.core;
+version(Windows):
 private:
 
 import core.sys.windows.core;

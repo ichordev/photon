@@ -19,6 +19,8 @@ photon_common = [
 	'photon/ds/blocking_queue.d'
 ]
 
+# strand_dep = dependency('strand', method : 'dub', version : '>=1.0.1')
+
 photon = static_library('photon',
     sources: photon_common + photon_linux,
     install: true,
