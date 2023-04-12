@@ -12,7 +12,7 @@ D Ranges with asynchronous event streams are natural extension
 
 ## Building
 
-Photon is polyglot project and uses [Meson](https://mesonbuild.com/) to build.
+Photon is a polyglot project and uses [Meson](https://mesonbuild.com/) to build.
 Just do the usual:
 ```
 meson build # only once to generate ninja build
