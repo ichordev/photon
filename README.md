@@ -10,6 +10,16 @@ LibC syscall wrapper is overriden to be aware of D fiber scheduling and transpar
 Explicit async model with tasks/futures is integrated with pseudoblocking fiber scheduling
 D Ranges with asynchronous event streams are natural extension
 
+## Building
+
+Photon is polyglot project and uses [Meson](https://mesonbuild.com/) to build.
+Just do the usual:
+```
+meson build # only once to generate ninja build
+cd build
+ninja
+```
+
 ## Blocking, async and pseudo-blocking
 
 In short, there are roughly 3 ways (glossing over OS specific abilities) to tackle I/O.
