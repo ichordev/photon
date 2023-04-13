@@ -66,16 +66,16 @@ private // helpers
     /* Macros */
 
     /* Basic access functions.  */
-    size_t __CPUELT(size_t cpu) pure
+    size_t __CPUELT()(size_t cpu) pure
     {
         return cpu / __NCPUBITS;
     }
-    cpu_mask __CPUMASK(size_t cpu) pure
+    cpu_mask __CPUMASK()(size_t cpu) pure
     {
         return 1UL << (cpu % __NCPUBITS);
     }
 
-    cpu_mask __CPU_SET_S(size_t cpu, size_t setsize, cpu_set_t* cpusetp) pure
+    cpu_mask __CPU_SET_S()(size_t cpu, size_t setsize, cpu_set_t* cpusetp) pure
     {
         if (cpu < 8 * setsize)
         {
@@ -98,7 +98,7 @@ struct cpu_set_t
 
 /// Access macros for 'cpu_set' (missing a lot of them)
 
-cpu_mask CPU_SET(size_t cpu, cpu_set_t* cpusetp) pure
+cpu_mask CPU_SET()(size_t cpu, cpu_set_t* cpusetp) pure
 {
      return __CPU_SET_S(cpu, cpu_set_t.sizeof, cpusetp);
 }
