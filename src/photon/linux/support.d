@@ -49,7 +49,6 @@ void logf(string file = __FILE__, int line = __LINE__, T...)(string msg, T args)
 }
 
 
-extern (C):
 @nogc:
 nothrow:
 
@@ -105,6 +104,7 @@ cpu_mask CPU_SET(size_t cpu, cpu_set_t* cpusetp) pure
 }
 
 /* Functions */
+extern(C):
 int sched_setaffinity(pid_t pid, size_t cpusetsize, cpu_set_t *mask);
 int sched_getaffinity(pid_t pid, size_t cpusetsize, cpu_set_t *mask);
 
