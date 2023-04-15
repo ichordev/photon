@@ -53,6 +53,14 @@ extern(Windows) uint worker(void* func)
     return 0;
 }
 
+public void spawnLight(void delegate() func) {
+    return spawn(func);
+}
+
+public void spawnHeavy(void delegate() func) {
+    new Thread(func).start();
+}
+
 public void spawn(void delegate() func)
 {
     ubyte[128] buf = void;
