@@ -5,7 +5,8 @@ import std.utf : byChar;
 import std.string;
 import core.sys.posix.fcntl;
 import core.sys.posix.unistd;
-import dfio;
+static import std.conv;
+import photon;
 
 void main(){
     startloop();
@@ -17,9 +18,9 @@ void main(){
         }
         char[] buf = "Write Test".dup;
         long r = core.sys.posix.unistd.write(fd, buf.ptr, buf.length);
-        logf("return r = %d\n", r);
+        writef("return r = %d\n", r);
         if (r >= 0)
-            logf("return  = %s\n", buf[0..r]);
+            writef("return  = %s\n", buf[0..r]);
     });
     runFibers();
 }
