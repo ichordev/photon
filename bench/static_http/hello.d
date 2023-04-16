@@ -1,3 +1,12 @@
+#!/usr/bin/env dub
+/+ dub.json:
+    {
+	"name" : "hello",
+    "dependencies": {
+		"photon": "~>0.3.0"
+        }
+    }
++/
 import std.algorithm;
 import std.conv;
 import std.datetime;
@@ -10,7 +19,6 @@ import std.uni;
 import core.thread;
 
 import photon;
-import utils.http_server;
 
 class HelloWorldProcessor : HttpProcessor {
     HttpHeader[] headers = [HttpHeader("Content-Type", "text/plain; charset=utf-8")];
