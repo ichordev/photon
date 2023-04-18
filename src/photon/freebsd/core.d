@@ -1,5 +1,5 @@
-module photon.linux.core;
-version(linux):
+module photon.freebsd.core;
+version(FreeBSD):
 private:
 
 import std.stdio;
@@ -14,9 +14,7 @@ import core.sys.posix.sys.types;
 import core.sys.posix.sys.socket;
 import core.sys.posix.poll;
 import core.sys.posix.netinet.in_;
-import core.sys.posix.unistd;
-import core.sys.linux.epoll;
-import core.sys.linux.timerfd;
+import core.sys.freebsd.unistd;
 import core.sync.mutex;
 import core.stdc.errno;
 import core.atomic;
@@ -27,8 +25,8 @@ import core.sys.posix.sys.mman;
 import core.sys.posix.pthread;
 import core.sys.linux.sys.signalfd;
 
-import photon.linux.support;
-import photon.linux.syscalls;
+import photon.freebsd.support;
+import photon.freebsd.syscalls;
 import photon.ds.common;
 import photon.ds.intrusive_queue;
 
@@ -76,12 +74,7 @@ nothrow:
 
 struct Timer {
 nothrow:
-    private int timerfd;
-
-
-    int fd() {
-        return timerfd;
-    }
+    private timer_t timer;
 
     static void ms2ts(timespec *ts, ulong ms)
     {
@@ -96,21 +89,21 @@ nothrow:
         its.it_value = ts_timeout;
         its.it_interval.tv_sec = 0;
         its.it_interval.tv_nsec = 0;
-        timerfd_settime(timerfd, 0, &its, null);
+        timer_settime(timer, 0, &its, null);
     }
 
     void disarm() {
         itimerspec its; // zeros
-        timerfd_settime(timerfd, 0, &its, null);
+        timer_settime(timer, 0, &its, null);
     }
 
     void dispose() { 
-        close(timerfd).checked;
+        timer_delete(timer).checked;
     }
 }
 
 Timer timer() {
-    int timerfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC).checked;
+    int timerfd = timer_create(CLOCK_MONOTONIC, null, null).checked;
     interceptFd!(Fcntl.noop)(timerfd);
     return Timer(timerfd);
 }
@@ -219,6 +212,16 @@ package(photon) shared SchedulerBlock[] scheds;
 
 enum int MAX_EVENTS = 500;
 enum int SIGNAL = 42;
+
+struct kevent {
+    size_t    ident;	     /*	identifier for this event */
+    short     filter;	     /*	filter for event */
+    ushort    flags;	     /*	action flags for kqueue	*/
+    uint      fflags;	     /*	filter flag value */
+    long      data;	     /*	filter data value */
+    void*     udata;	     /*	opaque user data identifier */
+    ulong[4]  ext;	     /*	extensions */
+};
 
 package(photon) void schedulerEntry(size_t n)
 {
@@ -404,42 +407,15 @@ void printStats()
     write(2, msg.ptr, msg.length);
 }
 
+shared int kq;
+
 public void startloop()
 {
     import core.cpuid;
     uint threads = threadsPerCPU;
-
-    event_loop_fd = cast(int)epoll_create1(0).checked("ERROR: Failed to create event-loop!");
-    // use RT signals, disable default termination on signal received
-    sigset_t mask;
-    sigemptyset(&mask);
-    sigaddset(&mask, SIGNAL);
-    pthread_sigmask(SIG_BLOCK, &mask, null).checked;
-    signal_loop_fd = cast(int)signalfd(-1, &mask, 0).checked("ERROR: Failed to create signalfd!");
-
-    epoll_event event;
-    event.events = EPOLLIN;
-    event.data.fd = signal_loop_fd;
-    epoll_ctl(event_loop_fd, EPOLL_CTL_ADD, signal_loop_fd, &event).checked;
-
-    termination = RawEvent(0);
-    event.events = EPOLLIN;
-    event.data.fd = termination.fd;
-    epoll_ctl(event_loop_fd, EPOLL_CTL_ADD, termination.fd, &event).checked;
-
-    {
-        
-        sigaction_t action;
-        action.sa_sigaction = &graceful_shutdown_on_signal;
-        sigaction(SIGTERM, &action, null).checked;
-    }
-
-    ssize_t fdMax = sysconf(_SC_OPEN_MAX).checked;
-    descriptors = (cast(shared(Descriptor*)) mmap(null, fdMax * Descriptor.sizeof, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0))[0..fdMax];
-    scheds = new SchedulerBlock[threads];
-    foreach(ref sched; scheds) {
-        sched.queue = IntrusiveQueue!(FiberExt, RawEvent)(RawEvent(0));
-    }
+    kq = kqueue();
+    enforce(kq != -1);
+    
     eventLoop = pthread_create(cast(pthread_t*)&eventLoop, null, &processEventsEntry, null);
 }
 
@@ -451,92 +427,11 @@ package(photon) void stoploop()
 
 extern(C) void* processEventsEntry(void*)
 {
+    kevent ke;
     for (;;) {
-        epoll_event[MAX_EVENTS] events = void;
-        signalfd_siginfo[20] fdsi = void;
-        int r;
-        do {
-            r = epoll_wait(event_loop_fd, events.ptr, MAX_EVENTS, -1);
-        } while (r < 0 && errno == EINTR);
-        checked(r);
-        for (int n = 0; n < r; n++) {
-            int fd = events[n].data.fd;
-            if (fd == termination.fd) {
-                foreach(ref s; scheds) s.queue.event.trigger();
-                return null;
-            }
-            else if (fd == signal_loop_fd) {
-                logf("Intercepted our aio SIGNAL");
-                ssize_t r2 = raw_read(signal_loop_fd, &fdsi, fdsi.sizeof);
-                logf("aio events = %d", r2 / signalfd_siginfo.sizeof);
-                if (r2 % signalfd_siginfo.sizeof != 0)
-                    checked(r2, "ERROR: failed read on signalfd");
-
-                for(int i = 0; i < r2 / signalfd_siginfo.sizeof; i++) { //TODO: stress test multiple signals
-                    logf("Processing aio event idx = %d", i);
-                    if (fdsi[i].ssi_signo == SIGNAL) {
-                        logf("HIT our SIGNAL");
-                        auto fiber = cast(FiberExt)cast(void*)fdsi[i].ssi_ptr;
-                        fiber.schedule();
-                    }
-                }
-            }
-            else {
-                auto descriptor = descriptors.ptr + fd;
-                if (descriptor.state == DescriptorState.NONBLOCKING) {
-                    if (events[n].events & EPOLLIN) {
-                        logf("Read event for fd=%d", fd);
-                        auto state = descriptor.readerState;
-                        logf("read state = %d", state);
-                        final switch(state) with(ReaderState) { 
-                            case EMPTY:
-                                logf("Trying to schedule readers");
-                                descriptor.changeReader(EMPTY, READY);
-                                descriptor.scheduleReaders(fd);
-                                logf("Scheduled readers");
-                                break;
-                            case UNCERTAIN:
-                                descriptor.changeReader(UNCERTAIN, READY);
-                                break;
-                            case READING:
-                                if (!descriptor.changeReader(READING, UNCERTAIN)) {
-                                    if (descriptor.changeReader(EMPTY, UNCERTAIN)) // if became empty - move to UNCERTAIN and wake readers
-                                        descriptor.scheduleReaders(fd);
-                                }
-                                break;
-                            case READY:
-                                descriptor.scheduleReaders(fd);
-                                break;
-                        }
-                        logf("Awaits %x", cast(void*)descriptor.readWaiters);
-                    }
-                    if (events[n].events & EPOLLOUT) {
-                        logf("Write event for fd=%d", fd);
-                        auto state = descriptor.writerState;
-                        logf("write state = %d", state);
-                        final switch(state) with(WriterState) { 
-                            case FULL:
-                                descriptor.changeWriter(FULL, READY);
-                                descriptor.scheduleWriters(fd);
-                                break;
-                            case UNCERTAIN:
-                                descriptor.changeWriter(UNCERTAIN, READY);
-                                break;
-                            case WRITING:
-                                if (!descriptor.changeWriter(WRITING, UNCERTAIN)) {
-                                    if (descriptor.changeWriter(FULL, UNCERTAIN)) // if became empty - move to UNCERTAIN and wake writers
-                                        descriptor.scheduleWriters(fd);
-                                }
-                                break;
-                            case READY:
-                                descriptor.scheduleWriters(fd);
-                                break;
-                        }
-                        logf("Awaits %x", cast(void*)descriptor.writeWaiters);
-                    }
-                }
-            }
-        }
+	if (kevent(kq, null, 0, &ke, 1, null) != -1) {
+		logf("A write occured on the file");
+	}
     }
 }
 
@@ -554,17 +449,13 @@ void interceptFd(Fcntl needsFcntl)(int fd) nothrow {
             fcntl(fd, F_SETFL, flags | O_NONBLOCK).checked;
             logf("Setting FCNTL. %x", cast(void*)currentFiber);
         }
-        epoll_event event;
-        event.events = EPOLLIN | EPOLLOUT | EPOLLET;
-        event.data.fd = fd;
-        if (epoll_ctl(event_loop_fd, EPOLL_CTL_ADD, fd, &event) < 0 && errno == EPERM) {
-            logf("isSocket = false FD = %s", fd);
-            descriptors[fd].state = DescriptorState.THREADPOOL;
-        }
-        else {
-            logf("isSocket = true FD = %s", fd);
-            descriptors[fd].state = DescriptorState.NONBLOCKING;
-        }
+	kevent ke;
+	ke.ident = fd;
+	ke.filter = EVFILT_READ | EVFILT_WRITE;
+	ke.flags = EV_ADD | EV_ENABLE;
+	timespec timeout;
+	timeout.tv_nsec = 1000;
+	enforce(kevent(kq, null, 0, &ke, 1, &timespec) >= 0);
     }
 }
 
