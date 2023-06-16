@@ -3,7 +3,8 @@ module photon;
 import core.thread;
 version(Windows) public import photon.windows.core;
 else version(linux) public import photon.linux.core;
-else version(FreeBSD) public import photon.linux.core;
+else version(freeBSD) public import photon.freebsd.core;
+else version(OSX) public import photon.macos.core;
 else static assert(false, "Target OS not supported by Photon yet!");
 
 void runFibers()
