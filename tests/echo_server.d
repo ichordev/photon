@@ -54,7 +54,7 @@ void server() {
 
     logf("Started server");
     void processClient(Socket client) {
-        spawn(() => server_worker(client));
+        go(() => server_worker(client));
     }
     while(true) {
         logf("Waiting for server.accept()");

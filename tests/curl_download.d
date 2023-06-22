@@ -21,7 +21,7 @@ immutable urls = [
 void main(){
 	startloop();
 	void spawnDownload(string url, string file) {
-		spawn(() => download(url, file));
+		go(() => download(url, file));
 	}
 	Thread threadDownload(string url, string file) {
 		auto t = new Thread(() => download(url, file));

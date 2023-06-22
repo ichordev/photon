@@ -44,7 +44,7 @@ void server() {
     debug writeln("Started server");
 
     void processClient(Socket client) {
-        spawn(() => server_worker(client));
+        go(() => server_worker(client));
     }
 
     while(true) {
@@ -66,6 +66,6 @@ void main() {
         GC.disable(); // temporary for Win64 UMS threading
     }
     startloop();
-    spawn(() => server());
+    go(() => server());
     runFibers();
 }

@@ -10,7 +10,7 @@ import photon;
 
 void main(){
     startloop();
-    spawn({
+    go({
         int fd = open("write.txt", O_RDWR | O_CREAT | O_TRUNC, std.conv.octal!644);
         if (fd < 0) {
             stderr.writefln("Error opening fd = %d", fd);

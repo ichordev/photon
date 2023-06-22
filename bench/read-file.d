@@ -10,7 +10,7 @@ import photon;
 void main(){
     startloop();
     std.file.write("file.txt", "Read Test");
-    spawn({
+    go({
 
         int fd = open("file.txt", O_RDONLY);
         char[20] buf;

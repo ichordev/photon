@@ -47,7 +47,7 @@ void main() {
    wr.start();
 
    // spawn fiber to read stuff
-   spawn(() => reader(socks[1]));
+   go(() => reader(socks[1]));
    runFibers();
    //
    wr.join();

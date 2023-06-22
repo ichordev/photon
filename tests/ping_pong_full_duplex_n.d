@@ -69,7 +69,7 @@ Thread threadPingPong(int fd, string toSend, string toRecv) {
 }
 
 void fiberPongPing(int fd, string toSend, string toRecv) {
-    spawn(() => readerWriter(fd, toSend, toRecv));
+    go(() => readerWriter(fd, toSend, toRecv));
 }
 
 void main(string[] args) {
