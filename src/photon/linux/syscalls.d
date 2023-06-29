@@ -1,6 +1,6 @@
 ///Syscall definitions and direct calls that bypass our libc intercepts
 module photon.linux.syscalls;
-
+version(linux):
 import core.sys.posix.sys.types;
 import core.sys.posix.netinet.in_;
 import core.sys.posix.poll;

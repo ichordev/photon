@@ -7,7 +7,6 @@ import core.stdc.stdlib;
 import core.thread;
 import core.stdc.config;
 import core.sys.posix.pthread;
-import photon.linux.syscalls;
 
 enum int MSG_DONTWAIT = 0x40;
 enum int SOCK_NONBLOCK = 0x800;
