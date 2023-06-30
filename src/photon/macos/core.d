@@ -32,7 +32,28 @@ import photon.ds.intrusive_queue;
 
 alias quad_t = ulong;
 alias off_t = long;
-extern(C) off_t __syscall(quad_t number, ...);
+extern(C) nothrow off_t __syscall(quad_t number, ...);
+extern(C) nothrow int kevent(int kq, const KEvent* changelist, int nchanges, const KEvent* eventlist, int nevent, timespec* tm);
+
+struct KEvent {
+    size_t    ident;	     /*	identifier for this event */
+    short     filter;	     /*	filter for event */
+    ushort    flags;	     /*	action flags for kqueue	*/
+    uint      fflags;	     /*	filter flag value */
+    long      data;	     /*	filter data value */
+    void*     udata;	     /*	opaque user data identifier */
+    ulong[4]  ext;	     /*	extensions */
+};
+
+enum SYS_READ = 3;
+enum SYS_WRITE = 4;
+enum SYS_ACCEPT = 30;
+enum SYS_CONNECT = 98;
+enum SYS_SENDTO = 133;
+enum SYS_RECVFROM = 29;
+enum SYS_CLOSE = 6;
+enum SYS_GETTID = 286;
+enum SYS_POLL = 230;
 
 // T becomes thread-local b/c it's stolen from shared resource
 auto steal(T)(ref shared T arg)
@@ -217,16 +238,6 @@ package(photon) shared SchedulerBlock[] scheds;
 enum int MAX_EVENTS = 500;
 enum int SIGNAL = 42;
 
-struct kevent {
-    size_t    ident;	     /*	identifier for this event */
-    short     filter;	     /*	filter for event */
-    ushort    flags;	     /*	action flags for kqueue	*/
-    uint      fflags;	     /*	filter flag value */
-    long      data;	     /*	filter data value */
-    void*     udata;	     /*	opaque user data identifier */
-    ulong[4]  ext;	     /*	extensions */
-};
-
 extern(C) int kqueue();
 
 package(photon) void schedulerEntry(size_t n)
@@ -406,6 +417,7 @@ void printStats()
 }
 
 shared int kq;
+shared int eventLoopId;
 
 public void startloop()
 {
@@ -414,22 +426,22 @@ public void startloop()
     kq = kqueue();
     enforce(kq != -1);
     
-    eventLoop = pthread_create(cast(pthread_t*)&eventLoop, null, &processEventsEntry, null);
+    pthread_create(cast(pthread_t*)&eventLoop, null, &processEventsEntry, null);
 }
 
 package(photon) void stoploop()
 {
     void* ret;
-    pthread_join(eventLoop, &ret);
+    pthread_join(cast(pthread_t)eventLoop, &ret);
 }
 
 extern(C) void* processEventsEntry(void*)
 {
-    kevent ke;
+    KEvent ke;
     for (;;) {
-	if (kevent(kq, null, 0, &ke, 1, null) != -1) {
-		logf("A write occured on the file");
-	}
+	    if (kevent(kq, null, 0, &ke, 1, null) != -1) {
+		    logf("A write occured on the file");
+	    }
     }
 }
 
@@ -447,13 +459,13 @@ void interceptFd(Fcntl needsFcntl)(int fd) nothrow {
             fcntl(fd, F_SETFL, flags | O_NONBLOCK).checked;
             logf("Setting FCNTL. %x", cast(void*)currentFiber);
         }
-	kevent ke;
-	ke.ident = fd;
-	ke.filter = EVFILT_READ | EVFILT_WRITE;
-	ke.flags = EV_ADD | EV_ENABLE;
-	timespec timeout;
-	timeout.tv_nsec = 1000;
-	enforce(kevent(kq, null, 0, &ke, 1, &timespec) >= 0);
+        KEvent ke;
+        ke.ident = fd;
+        ke.filter = (-1) | (-2);
+        ke.flags = 0x0001 | 0x0004;
+        timespec timeout;
+        timeout.tv_nsec = 1000;
+        kevent(kq, null, 0, &ke, 1, &timeout);
     }
 }
 
@@ -613,12 +625,6 @@ extern(C) ssize_t accept(int sockfd, sockaddr *addr, socklen_t *addrlen)
         (sockfd, cast(size_t) addr, cast(size_t) addrlen);    
 }
 
-extern(C) ssize_t accept4(int sockfd, sockaddr *addr, socklen_t *addrlen, int flags)
-{
-    return universalSyscall!(SYS_ACCEPT4, "accept4", SyscallKind.accept, Fcntl.sock, EWOULDBLOCK)
-        (sockfd, cast(size_t) addr, cast(size_t) addrlen, flags);
-}
-
 extern(C) ssize_t connect(int sockfd, const sockaddr *addr, socklen_t *addrlen)
 {
     return universalSyscall!(SYS_CONNECT, "connect", SyscallKind.connect, Fcntl.explicit, EINPROGRESS)
@@ -721,11 +727,6 @@ extern(C) private ssize_t poll(pollfd *fds, nfds_t nfds, int timeout)
         if (nfds == 0) {
             if (timeout == 0) return 0;
             shared AwaitingFiber aw = shared(AwaitingFiber)(cast(shared)currentFiber);
-            Timer tm = timer();
-            descriptors[tm.fd].enqueueReader(&aw);
-            scope(exit) tm.dispose();
-            tm.arm(timeout);
-            logf("Timer fd=%d", tm.fd);
             Fiber.yield();
             logf("Woke up after select %x. WakeFd=%d", cast(void*)currentFiber, currentFiber.wakeFd);
             return 0;
@@ -744,25 +745,15 @@ extern(C) private ssize_t poll(pollfd *fds, nfds_t nfds, int timeout)
             else if(fds[i].events & POLLOUT)
                 descriptors[fds[i].fd].enqueueWriter(&aw);
         }
-        Timer tm = timer();
-        scope(exit) tm.dispose();
-        tm.arm(timeout);
-        descriptors[tm.fd].enqueueReader(&aw);
         Fiber.yield();
-        tm.disarm();
-        atomicStore(descriptors[tm.fd]._readerWaits, cast(shared(AwaitingFiber)*)null);
         foreach (i; 0..nfds) {
             if (fds[i].events & POLLIN)
                 descriptors[fds[i].fd].removeReader(&aw);
             else if(fds[i].events & POLLOUT)
                 descriptors[fds[i].fd].removeWriter(&aw);
         }
-        logf("Woke up after select %x. WakeFD=%d", cast(void*)currentFiber, currentFiber.wakeFd);
-        if (currentFiber.wakeFd == tm.fd) return 0;
-        else {
-            nonBlockingCheck(result);
-            return result;
-        }
+        nonBlockingCheck(result);
+        return result;
     }
 }
 
@@ -776,22 +767,22 @@ extern(C) private ssize_t close(int fd) nothrow
 
 int gettid()
 {
-    return cast(int)syscall(SYS_GETTID);
+    return cast(int)__syscall(SYS_GETTID);
 }
 
 ssize_t raw_read(int fd, void *buf, size_t count) nothrow {
     logf("Raw read on FD=%d", fd);
-    return syscall(SYS_READ, fd, cast(ssize_t) buf, cast(ssize_t) count).withErrorno;
+    return __syscall(SYS_READ, fd, cast(ssize_t) buf, cast(ssize_t) count).withErrorno;
 }
 
 ssize_t raw_write(int fd, const void *buf, size_t count) nothrow
 {
     logf("Raw write on FD=%d", fd);
-    return syscall(SYS_WRITE, fd, cast(size_t) buf, count).withErrorno;
+    return __syscall(SYS_WRITE, fd, cast(size_t) buf, count).withErrorno;
 }
 
 ssize_t raw_poll(pollfd *fds, nfds_t nfds, int timeout)
 {
     logf("Raw poll");
-    return syscall(SYS_POLL, cast(size_t)fds, cast(size_t) nfds, timeout).withErrorno;
+    return __syscall(SYS_POLL, cast(size_t)fds, cast(size_t) nfds, timeout).withErrorno;
 }
