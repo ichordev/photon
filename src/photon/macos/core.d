@@ -435,13 +435,22 @@ package(photon) void stoploop()
     pthread_join(cast(pthread_t)eventLoop, &ret);
 }
 
+enum EVFILT_READ = -1;
+enum EVFILT_WRITE = -2;
+
 extern(C) void* processEventsEntry(void*)
 {
-    KEvent ke;
+    KEvent[MAX_EVENTS] ke;
     for (;;) {
-	    if (kevent(kq, null, 0, &ke, 1, null) != -1) {
-		    logf("A write occured on the file");
-	    }
+	    int cnt = kevent(kq, null, 0, ke.ptr, MAX_EVENTS, null);
+        enforce(cnt >= 0);
+		for (int i = 0; i < cnt; i++) {
+            if (ke[i].filter == EVFILT_READ) {
+                //auto reader = descriptors[ke[i].ident].removeReader();
+            } else if(ke[i].filter == EVFILT_WRITE) {
+                //auto writer = descriptors[ke[i].ident].removeWriter();
+            }
+        }
     }
 }
 
