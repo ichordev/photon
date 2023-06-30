@@ -465,7 +465,7 @@ void interceptFd(Fcntl needsFcntl)(int fd) nothrow {
         ke.flags = 0x0001 | 0x0004;
         timespec timeout;
         timeout.tv_nsec = 1000;
-        kevent(kq, null, 0, &ke, 1, &timeout);
+        kevent(kq, &ke, 1, null, 0, &timeout);
     }
 }
 
