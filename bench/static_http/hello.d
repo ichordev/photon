@@ -1,9 +1,9 @@
 #!/usr/bin/env dub
 /+ dub.json:
     {
-	"name" : "hello",
-    "dependencies": {
-		"photon": "~>0.3.0"
+	    "name" : "hello",
+        "dependencies": {
+		    "photon": { "path" : "../.." }
         }
     }
 +/

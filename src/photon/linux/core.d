@@ -254,15 +254,7 @@ package(photon) void schedulerEntry(size_t n)
     termination.trigger();
 }
 
-public void spawnLight(void delegate() func) {
-    return spawn(func);
-}
-
-public void spawnHeavy(void delegate() func) {
-    new Thread(func).start();
-}
-
-public void spawn(void delegate() func) {
+public void go(void delegate() func) {
     import std.random;
     uint choice;
     if (scheds.length == 1) choice = 0;
