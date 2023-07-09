@@ -3,6 +3,7 @@ module photon.ds.blocking_queue;
 import photon.ds.common;
 import core.sync.condition;
 import std.container;
+version(Windows):
 
 shared class BlockingQueue(T) : WorkQueue!T {
     private shared Condition cond;

@@ -43,7 +43,7 @@ void server_worker(Socket client) {
             }
             sent += received;
         } while(sent < received);
-    } while(keepAlive);
+    }
 }
 
 void server() {
@@ -66,6 +66,6 @@ void server() {
 
 void main() {
     startloop();
-    spawn(() => server());
+    go(() => server());
     runFibers();
 }

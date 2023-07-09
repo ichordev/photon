@@ -445,11 +445,8 @@ extern(C) void* processEventsEntry(void*)
 	    int cnt = kevent(kq, null, 0, ke.ptr, MAX_EVENTS, null);
         enforce(cnt >= 0);
 		for (int i = 0; i < cnt; i++) {
-            if (ke[i].filter == EVFILT_READ) {
-                //auto reader = descriptors[ke[i].ident].removeReader();
-            } else if(ke[i].filter == EVFILT_WRITE) {
-                //auto writer = descriptors[ke[i].ident].removeWriter();
-            }
+            descriptors[ke[i].ident].scheduleWriters(cast(int)ke[i].ident);
+            descriptors[ke[i].ident].scheduleReaders(cast(int)ke[i].ident);
         }
     }
 }
