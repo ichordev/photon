@@ -520,13 +520,15 @@ void interceptFd(Fcntl needsFcntl)(int fd) nothrow {
             fcntl(fd, F_SETFL, flags | O_NONBLOCK).checked;
             logf("Setting FCNTL. %x", cast(void*)currentFiber);
         }
-        KEvent ke;
-        ke.ident = fd;
-        ke.filter = (-1) | (-2);
-        ke.flags = 0x0001 | 0x0004;
+        KEvent[2] ke;
+        ke[0].ident = fd;
+        ke[1].ident = fd;
+        ke[0].filter = EVFILT_READ;
+        ke[1].filter = EVFILT_WRITE;
+        ke[1].flags = ke[0].flags = EV_ADD | EV_ENABLE | EV_CLEAR;
         timespec timeout;
         timeout.tv_nsec = 1000;
-        kevent(kq, &ke, 1, null, 0, &timeout);
+        kevent(kq, ke.ptr, 2, null, 0, &timeout);
     }
 }
 
