@@ -7,7 +7,9 @@ import core.sys.posix.sys.socket;
 import core.sys.posix.fcntl;
 import core.thread;
 import core.sys.posix.stdlib: abort;
-import dfio;
+import photon;
+import photon.support;
+static import core.sys.posix.unistd;
 
 void check(int code) {
     if(code < 0)

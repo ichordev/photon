@@ -1,14 +1,13 @@
 module photon.freebsd.support;
 
 import core.sys.posix.unistd;
-import core.sys.linux.timerfd;
 import core.stdc.errno;
 import core.stdc.stdlib;
 import core.thread;
 import core.stdc.config;
 import core.sys.posix.pthread;
 
-enum int MSG_DONTWAIT = 0x40;
+enum int MSG_DONTWAIT = 0x80;
 enum int SOCK_NONBLOCK = 0x800;
 
 extern(C) int eventfd(uint initial, int flags) nothrow;

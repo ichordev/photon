@@ -12,6 +12,7 @@ import std.range;
 import core.thread;
 
 import photon;
+import photon.support : logf;
 
 // telnet localhost 1337
 void server_worker(Socket client) {
@@ -32,11 +33,10 @@ void server_worker(Socket client) {
         }
         else {
             logf("Server_worker received:\n<%s>", cast(char[])buffer[0.. received]);
-            parser.execute(buffer[0..received]);
         }
         ptrdiff_t sent;
         do {
-            ptrdiff_t ret = client.send(buf[sent .. received]);
+            ptrdiff_t ret = client.send(buffer[sent .. received]);
             if (ret < 0) {
                 perror("Error while writing to client");
                 return;

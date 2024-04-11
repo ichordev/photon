@@ -26,7 +26,7 @@ import core.memory;
 import core.sys.posix.sys.mman;
 import core.sys.posix.pthread;
 
-import photon.freebsd.support;
+import photon.macos.support;
 import photon.ds.common;
 import photon.ds.intrusive_queue;
 
@@ -67,34 +67,31 @@ auto steal(T)(ref shared T arg)
 
 shared struct RawEvent {
 nothrow:
-    this(int init) {
-        fd = eventfd(init, 0);
+    this(int dummy) {
+        int[2] fds;
+        pipe(fds).checked("event creation");
+        this.fds  = fds;
     }
 
     void waitAndReset() {
-        byte[8] bytes = void;
+        byte[1] bytes = void;
         ssize_t r;
         do {
-            r = raw_read(fd, bytes.ptr, 8);
+            r = raw_read(fds[0], bytes.ptr, 1);
         } while(r < 0 && errno == EINTR);
         r.checked("event reset");
     }
     
     void trigger() { 
-        union U {
-            ulong cnt;
-            ubyte[8] bytes;
-        }
-        U value;
-        value.cnt = 1;
+        ubyte[1] bytes;
         ssize_t r;
         do {
-            r = raw_write(fd, value.bytes.ptr, 8);
+            r = raw_write(fds[1], bytes.ptr, 1);
         } while(r < 0 && errno == EINTR);
         r.checked("event trigger");
     }
     
-    int fd;
+    int[2] fds;
 }
 /*
 struct Timer {
@@ -229,7 +226,7 @@ shared int alive; // count of non-terminated Fibers scheduled
 struct SchedulerBlock {
     shared IntrusiveQueue!(FiberExt, RawEvent) queue;
     shared uint assigned;
-    size_t[2] padding;
+    size_t[1] padding;
 }
 static assert(SchedulerBlock.sizeof == 64);
 
@@ -243,9 +240,10 @@ extern(C) int kqueue();
 package(photon) void schedulerEntry(size_t n)
 {
     int tid = gettid();
-    cpu_set_t mask;
+    /*cpu_set_t mask;
     CPU_SET(n, &mask);
     sched_setaffinity(tid, mask.sizeof, &mask).checked("sched_setaffinity");
+    */
     shared SchedulerBlock* sched = scheds.ptr + n;
     while (alive > 0) {
         sched.queue.event.waitAndReset();
@@ -425,7 +423,12 @@ public void startloop()
     uint threads = threadsPerCPU;
     kq = kqueue();
     enforce(kq != -1);
-    
+    ssize_t fdMax = sysconf(_SC_OPEN_MAX).checked;
+    descriptors = (cast(shared(Descriptor*)) mmap(null, fdMax * Descriptor.sizeof, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0))[0..fdMax];
+    scheds = new SchedulerBlock[threads];
+    foreach(ref sched; scheds) {
+        sched.queue = IntrusiveQueue!(FiberExt, RawEvent)(RawEvent(0));
+    }
     pthread_create(cast(pthread_t*)&eventLoop, null, &processEventsEntry, null);
 }
 
@@ -445,13 +448,65 @@ extern(C) void* processEventsEntry(void*)
 	    int cnt = kevent(kq, null, 0, ke.ptr, MAX_EVENTS, null);
         enforce(cnt >= 0);
 		for (int i = 0; i < cnt; i++) {
+            auto fd = cast(int)ke[i].ident;
+            auto filter = ke[i].filter;
+            auto descriptor = descriptors.ptr + fd;
+            if (filter & EVFILT_READ) {
+                logf("Read event for fd=%d", fd);
+                auto state = descriptor.readerState;
+                logf("read state = %d", state);                
+                final switch(descriptor.readerState) with(ReaderState) {
+                    case EMPTY:
+                        logf("Trying to schedule readers");
+                        descriptor.changeReader(EMPTY, READY);
+                        descriptor.scheduleReaders(fd);
+                        logf("Scheduled readers");
+                        break;
+                    case UNCERTAIN:
+                        descriptor.changeReader(UNCERTAIN, READY);
+                        break;
+                    case READING:
+                        if (!descriptor.changeReader(READING, UNCERTAIN)) {
+                            if (descriptor.changeReader(EMPTY, UNCERTAIN)) // if became empty - move to UNCERTAIN and wake readers
+                                descriptor.scheduleReaders(fd);
+                        }
+                        break;
+                    case READY:
+                        descriptor.scheduleReaders(fd);
+                        break;
+                }
+            }
+            if (filter & EVFILT_WRITE) {
+                logf("Write event for fd=%d", fd);
+                auto state = descriptor.writerState;
+                logf("write state = %d", state);
+                final switch(state) with(WriterState) { 
+                    case FULL:
+                        descriptor.changeWriter(FULL, READY);
+                        descriptor.scheduleWriters(fd);
+                        break;
+                    case UNCERTAIN:
+                        descriptor.changeWriter(UNCERTAIN, READY);
+                        break;
+                    case WRITING:
+                        if (!descriptor.changeWriter(WRITING, UNCERTAIN)) {
+                            if (descriptor.changeWriter(FULL, UNCERTAIN)) // if became empty - move to UNCERTAIN and wake writers
+                                descriptor.scheduleWriters(fd);
+                        }
+                        break;
+                    case READY:
+                        descriptor.scheduleWriters(fd);
+                        break;
+                }
+                logf("Awaits %x", cast(void*)descriptor.writeWaiters);
+            }
             descriptors[ke[i].ident].scheduleWriters(cast(int)ke[i].ident);
-            descriptors[ke[i].ident].scheduleReaders(cast(int)ke[i].ident);
+            
         }
     }
 }
 
-enum Fcntl: int { explicit = 0, msg = MSG_DONTWAIT, sock = SOCK_NONBLOCK, noop = 0xFFFFF }
+enum Fcntl: int { explicit = 0, msg = MSG_DONTWAIT, noop = 0xFFFFF }
 enum SyscallKind { accept, read, write, connect }
 
 // intercept - a filter for file descriptor, changes flags and register on first use

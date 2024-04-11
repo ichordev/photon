@@ -12,8 +12,10 @@ import core.sys.posix.fcntl;
 import core.thread;
 import core.time;
 import core.sys.posix.stdlib: abort;
+static import core.sys.posix.unistd;
 import std.conv : to;
-import dfio;
+import photon;
+import photon.support;
 
 void check(int code) {
     if(code < 0)
@@ -44,7 +46,6 @@ void writerReader(int fd, string toSend, string toRecv) {
 
 // it must read the exact same amount (in total) that would be 100 bytes
 void readerWriter(int fd, string toSend, string toRecv) {
-    logf("Fiber = %s", cast(void*)currentFiber);
     logf("<started readerWriter, fd = %d>", fd);
     char[100] buf = 0;
     ssize_t total = toRecv.length;
