@@ -27,7 +27,22 @@ enum int EVFILT_TIMER	 =	(-7);	/* timers */
 enum int EVFILT_MACHPORT =	(-8);	/* Mach ports */
 enum int EVFILT_FS		 =  (-9);	    /* Filesystem events */
 
+alias quad_t = ulong;
+alias off_t = long;
+extern(C) nothrow off_t __syscall(quad_t number, ...);
+extern(C) nothrow int kevent(int kq, const KEvent* changelist, int nchanges, const KEvent* eventlist, int nevent, timespec* tm);
 
+struct KEvent {
+    size_t    ident;	     /*	identifier for this event */
+    short     filter;	     /*	filter for event */
+    ushort    flags;	     /*	action flags for kqueue	*/
+    uint      fflags;	     /*	filter flag value */
+    long      data;	     /*	filter data value */
+    void*     udata;	     /*	opaque user data identifier */
+    ulong[4]  ext;	     /*	extensions */
+}
+
+extern(C) int kqueue();
 extern(C) void perror(const(char) *s) nothrow;
 
 T checked(T: ssize_t)(T value, const char* msg="unknown place") nothrow {
@@ -36,17 +51,6 @@ T checked(T: ssize_t)(T value, const char* msg="unknown place") nothrow {
         _exit(cast(int)-value);
     }
     return value;
-}
-
-ssize_t withErrorno(ssize_t resp) nothrow {
-    if(resp < 0) {
-        //logf("Syscall ret %d", resp);
-        errno = cast(int)-resp;
-        return -1;
-    }
-    else {
-        return resp;
-    }
 }
 
 void logf(string file = __FILE__, int line = __LINE__, T...)(string msg, T args)

@@ -41,7 +41,7 @@ void server_worker(Socket client) {
                 perror("Error while writing to client");
                 return;
             }
-            sent += received;
+            sent += ret;
         } while(sent < received);
     }
 }
@@ -49,7 +49,7 @@ void server_worker(Socket client) {
 void server() {
     Socket server = new TcpSocket();
     server.setOption(SocketOptionLevel.SOCKET, SocketOption.REUSEADDR, true);
-    server.bind(new InternetAddress("localhost", 1337));
+    server.bind(new InternetAddress("127.0.0.1", 1337));
     server.listen(1000);
 
     logf("Started server");

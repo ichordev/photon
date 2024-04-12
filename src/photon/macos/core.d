@@ -30,20 +30,6 @@ import photon.macos.support;
 import photon.ds.common;
 import photon.ds.intrusive_queue;
 
-alias quad_t = ulong;
-alias off_t = long;
-extern(C) nothrow off_t __syscall(quad_t number, ...);
-extern(C) nothrow int kevent(int kq, const KEvent* changelist, int nchanges, const KEvent* eventlist, int nevent, timespec* tm);
-
-struct KEvent {
-    size_t    ident;	     /*	identifier for this event */
-    short     filter;	     /*	filter for event */
-    ushort    flags;	     /*	action flags for kqueue	*/
-    uint      fflags;	     /*	filter flag value */
-    long      data;	     /*	filter data value */
-    void*     udata;	     /*	opaque user data identifier */
-    ulong[4]  ext;	     /*	extensions */
-};
 
 enum SYS_READ = 3;
 enum SYS_WRITE = 4;
@@ -235,7 +221,6 @@ package(photon) shared SchedulerBlock[] scheds;
 enum int MAX_EVENTS = 500;
 enum int SIGNAL = 42;
 
-extern(C) int kqueue();
 
 package(photon) void schedulerEntry(size_t n)
 {
@@ -270,6 +255,9 @@ package(photon) void schedulerEntry(size_t n)
         }
     }
     termination.trigger();
+    foreach (ref s; scheds) {
+        s.queue.event.trigger();
+    }
 }
 
 public void go(void delegate() func) {
@@ -288,7 +276,7 @@ public void go(void delegate() func) {
     atomicOp!"+="(scheds[choice].assigned, 1);
     atomicOp!"+="(alive, 1);
     auto f = new FiberExt(func, choice);
-    logf("Assigned %x -> %d scheduler", cast(void*)f, choice);
+    logf("Assigned %x -> %d / %d scheduler", cast(void*)f, choice, scheds.length);
     f.schedule();
 }
 
@@ -419,13 +407,13 @@ shared int eventLoopId;
 
 public void startloop()
 {
-    import core.cpuid;
-    uint threads = threadsPerCPU;
+    int threads = cast(int)sysconf(_SC_NPROCESSORS_ONLN).checked;
     kq = kqueue();
     enforce(kq != -1);
     ssize_t fdMax = sysconf(_SC_OPEN_MAX).checked;
     descriptors = (cast(shared(Descriptor*)) mmap(null, fdMax * Descriptor.sizeof, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0))[0..fdMax];
     scheds = new SchedulerBlock[threads];
+    termination = RawEvent(0);
     foreach(ref sched; scheds) {
         sched.queue = IntrusiveQueue!(FiberExt, RawEvent)(RawEvent(0));
     }
@@ -438,9 +426,6 @@ package(photon) void stoploop()
     pthread_join(cast(pthread_t)eventLoop, &ret);
 }
 
-enum EVFILT_READ = -1;
-enum EVFILT_WRITE = -2;
-
 extern(C) void* processEventsEntry(void*)
 {
     KEvent[MAX_EVENTS] ke;
@@ -451,8 +436,9 @@ extern(C) void* processEventsEntry(void*)
             auto fd = cast(int)ke[i].ident;
             auto filter = ke[i].filter;
             auto descriptor = descriptors.ptr + fd;
-            if (filter & EVFILT_READ) {
+            if (filter == EVFILT_READ) {
                 logf("Read event for fd=%d", fd);
+                if (fd == termination.fds[0]) return null;
                 auto state = descriptor.readerState;
                 logf("read state = %d", state);                
                 final switch(descriptor.readerState) with(ReaderState) {
@@ -476,7 +462,7 @@ extern(C) void* processEventsEntry(void*)
                         break;
                 }
             }
-            if (filter & EVFILT_WRITE) {
+            if (filter == EVFILT_WRITE) {
                 logf("Write event for fd=%d", fd);
                 auto state = descriptor.writerState;
                 logf("write state = %d", state);
@@ -500,8 +486,7 @@ extern(C) void* processEventsEntry(void*)
                 }
                 logf("Awaits %x", cast(void*)descriptor.writeWaiters);
             }
-            descriptors[ke[i].ident].scheduleWriters(cast(int)ke[i].ident);
-            
+            descriptors[ke[i].ident].scheduleWriters(cast(int)ke[i].ident);   
         }
     }
 }
@@ -547,7 +532,7 @@ ssize_t universalSyscall(size_t ident, string name, SyscallKind kind, Fcntl fcnt
                         (int fd, T args) nothrow {
     if (currentFiber is null) {
         logf("%s PASSTHROUGH FD=%s", name, fd);
-        return __syscall(ident, fd, args).withErrorno;
+        return __syscall(ident, fd, args);
     }
     else {
         logf("HOOKED %s FD=%d", name, fd);
@@ -556,7 +541,7 @@ ssize_t universalSyscall(size_t ident, string name, SyscallKind kind, Fcntl fcnt
         if (atomicLoad(descriptor.state) == DescriptorState.THREADPOOL) {
             logf("%s syscall THREADPOLL FD=%d", name, fd);
             //TODO: offload syscall to thread-pool
-            return __syscall(ident, fd, args).withErrorno;
+            return __syscall(ident, fd, args);
         }
     L_start:
         shared AwaitingFiber await = AwaitingFiber(cast(shared)currentFiber, null);
@@ -589,7 +574,7 @@ ssize_t universalSyscall(size_t ident, string name, SyscallKind kind, Fcntl fcnt
                 static if (kind == SyscallKind.accept) {
                     if (resp >= 0) // for accept we never know if we emptied the queue
                         descriptor.changeReader(READING, UNCERTAIN);
-                    else if (resp == -ERR || resp == -EAGAIN) {
+                    else if (errno == ERR || errno == EAGAIN) {
                         if (descriptor.changeReader(READING, EMPTY))
                             goto case EMPTY;
                         goto L_start; // became UNCERTAIN or READY in meantime
@@ -600,7 +585,7 @@ ssize_t universalSyscall(size_t ident, string name, SyscallKind kind, Fcntl fcnt
                         descriptor.changeReader(READING, UNCERTAIN);
                     else if(resp >= 0)
                         descriptor.changeReader(READING, EMPTY);
-                    else if (resp == -ERR || resp == -EAGAIN) {
+                    else if (errno == ERR || errno == EAGAIN) {
                         if (descriptor.changeReader(READING, EMPTY))
                             goto case EMPTY;
                         goto L_start; // became UNCERTAIN or READY in meantime
@@ -608,7 +593,7 @@ ssize_t universalSyscall(size_t ident, string name, SyscallKind kind, Fcntl fcnt
                 }
                 else
                     static assert(0);
-                return withErrorno(resp);
+                return resp;
             }
         }
         else static if(kind == SyscallKind.write || kind == SyscallKind.connect) {
@@ -636,13 +621,13 @@ ssize_t universalSyscall(size_t ident, string name, SyscallKind kind, Fcntl fcnt
                     if(resp >= 0) {
                         descriptor.changeWriter(WRITING, READY);
                     }
-                    else if (resp == -ERR || resp == -EALREADY) {
+                    else if (errno == ERR || errno == EALREADY) {
                         if (descriptor.changeWriter(WRITING, FULL)) {
                             goto case FULL;
                         }
                         goto L_start; // became UNCERTAIN or READY in meantime
                     }
-                    return withErrorno(resp);
+                    return resp;
                 }
                 else {
                     if (resp == args[1]) // (buf, len) args to syscall
@@ -651,14 +636,14 @@ ssize_t universalSyscall(size_t ident, string name, SyscallKind kind, Fcntl fcnt
                         logf("Short-write on FD=%d, become FULL", fd);
                         descriptor.changeWriter(WRITING, FULL);
                     }
-                    else if (resp == -ERR || resp == -EAGAIN) {
+                    else if (errno == ERR || errno == EAGAIN) {
                         if (descriptor.changeWriter(WRITING, FULL)) {
                             logf("Sudden block on FD=%d, become FULL", fd);
                             goto case FULL;
                         }
                         goto L_start; // became UNCERTAIN or READY in meantime
                     }
-                    return withErrorno(resp);
+                    return resp;
                 }
             }
         }
@@ -672,13 +657,13 @@ ssize_t universalSyscall(size_t ident, string name, SyscallKind kind, Fcntl fcnt
 
 extern(C) ssize_t read(int fd, void *buf, size_t count) nothrow
 {
-    return universalSyscall!(SYS_READ, "READ", SyscallKind.read, Fcntl.explicit, EWOULDBLOCK)
+    return universalSyscall!(SYS_READ, "read", SyscallKind.read, Fcntl.explicit, EWOULDBLOCK)
         (fd, cast(size_t)buf, count);
 }
 
 extern(C) ssize_t write(int fd, const void *buf, size_t count)
 {
-    return universalSyscall!(SYS_WRITE, "WRITE", SyscallKind.write, Fcntl.explicit, EWOULDBLOCK)
+    return universalSyscall!(SYS_WRITE, "write", SyscallKind.write, Fcntl.explicit, EWOULDBLOCK)
         (fd, cast(size_t)buf, count);
 }
 
@@ -713,7 +698,7 @@ extern(C) size_t recv(int sockfd, void *buf, size_t len, int flags) nothrow {
 extern(C) private ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags,
                         sockaddr *src_addr, ssize_t* addrlen) nothrow
 {
-    return universalSyscall!(SYS_RECVFROM, "RECVFROM", SyscallKind.read, Fcntl.msg, EWOULDBLOCK)
+    return universalSyscall!(SYS_RECVFROM, "recvfrom", SyscallKind.read, Fcntl.msg, EWOULDBLOCK)
         (sockfd, cast(size_t)buf, len, flags, cast(size_t)src_addr, cast(size_t)addrlen);
 }
 
@@ -786,7 +771,10 @@ extern(C) private ssize_t poll(pollfd *fds, nfds_t nfds, int timeout)
     }
     else {
         logf("HOOKED POLL %d fds timeout %d", nfds, timeout);
-        if (nfds < 0) return -EINVAL.withErrorno;
+        if (nfds < 0) {
+            errno = EINVAL;
+            return -1;
+        }
         if (nfds == 0) {
             if (timeout == 0) return 0;
             shared AwaitingFiber aw = shared(AwaitingFiber)(cast(shared)currentFiber);
@@ -795,7 +783,10 @@ extern(C) private ssize_t poll(pollfd *fds, nfds_t nfds, int timeout)
             return 0;
         }
         foreach(ref fd; fds[0..nfds]) {
-            if (fd.fd < 0 || fd.fd >= descriptors.length) return -EBADF.withErrorno;
+            if (fd.fd < 0 || fd.fd >= descriptors.length) {
+                errno = EBADF;
+                return -1;
+            }
             fd.revents = 0;
         }
         ssize_t result = 0;
@@ -824,7 +815,7 @@ extern(C) private ssize_t close(int fd) nothrow
 {
     logf("HOOKED CLOSE FD=%d", fd);
     deregisterFd(fd);
-    return cast(int)withErrorno(__syscall(SYS_CLOSE, fd));
+    return cast(int)__syscall(SYS_CLOSE, fd);
 }
 
 
@@ -835,17 +826,17 @@ int gettid()
 
 ssize_t raw_read(int fd, void *buf, size_t count) nothrow {
     logf("Raw read on FD=%d", fd);
-    return __syscall(SYS_READ, fd, cast(ssize_t) buf, cast(ssize_t) count).withErrorno;
+    return __syscall(SYS_READ, fd, cast(ssize_t) buf, cast(ssize_t) count);
 }
 
 ssize_t raw_write(int fd, const void *buf, size_t count) nothrow
 {
     logf("Raw write on FD=%d", fd);
-    return __syscall(SYS_WRITE, fd, cast(size_t) buf, count).withErrorno;
+    return __syscall(SYS_WRITE, fd, cast(size_t) buf, count);
 }
 
 ssize_t raw_poll(pollfd *fds, nfds_t nfds, int timeout)
 {
     logf("Raw poll");
-    return __syscall(SYS_POLL, cast(size_t)fds, cast(size_t) nfds, timeout).withErrorno;
+    return __syscall(SYS_POLL, cast(size_t)fds, cast(size_t) nfds, timeout);
 }
