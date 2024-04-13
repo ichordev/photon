@@ -11,31 +11,74 @@ import std.exception;
 import std.windows.syserror;
 import std.random;
 import std.format;
+import photon.ds.intrusive_queue;
 
-
-struct SchedulerBlock
+// T becomes thread-local b/c it's stolen from shared resource
+auto steal(T)(ref shared T arg)
 {
-    AlignedSpinLock lock; // lock around the queue
-    UMS_COMPLETION_LIST* completionList;
-    RingQueue!(UMS_CONTEXT*) queue; // queue has the number of outstanding threads
-    shared uint assigned; // total assigned UMS threads
-
-    this(int size)
-    {
-        lock = AlignedSpinLock(SpinLock.Contention.brief);
-        queue = RingQueue!(UMS_CONTEXT*)(size);
-        wenforce(CreateUmsCompletionList(&completionList), "failed to create UMS completion");
+    for (;;) {
+        auto v = atomicLoad(arg);
+        if(cas(&arg, v, cast(shared(T))null)) return v;
     }
 }
 
-package(photon) __gshared SchedulerBlock[] scheds;
-shared uint activeThreads;
-size_t schedNum; // (TLS) number of scheduler
 
-struct Functor
-{
-	void delegate() func;
+shared struct RawEvent {
+nothrow:
+    this(bool signaled) {
+        ev = cast(shared(HANDLE))CreateEventA(null, FALSE, signaled, null);
+        assert(ev != null, "Failed to create RawEvent");
+    }
+
+    void waitAndReset() {
+        auto ret = WaitForSingleObject(cast(HANDLE)ev, INFINITE);
+        assert(ret == WAIT_OBJECT_0, "Failed while waiting on event");
+    }
+    
+    void trigger() { 
+        SetEvent(cast(HANDLE)ev);
+    }
+    
+    HANDLE ev;
 }
+
+struct SchedulerBlock {
+    shared IntrusiveQueue!(FiberExt, RawEvent) queue;
+    shared uint assigned;
+    size_t[1] padding;
+}
+static assert(SchedulerBlock.sizeof == 64);
+
+package(photon) __gshared SchedulerBlock[] scheds;
+
+class FiberExt : Fiber { 
+    FiberExt next;
+    uint numScheduler;
+    int bytesTransfered;
+
+    enum PAGESIZE = 4096;
+    
+    this(void function() fn, uint numSched) nothrow {
+        super(fn);
+        numScheduler = numSched;
+    }
+
+    this(void delegate() dg, uint numSched) nothrow {
+        super(dg);
+        numScheduler = numSched;
+    }
+
+    void schedule() nothrow
+    {
+        scheds[numScheduler].queue.push(this);
+    }
+}
+
+FiberExt currentFiber; 
+shared RawEvent termination; // termination event, triggered once last fiber exits
+shared HANDLE eventLoop; // event loop, runs outside of D runtime
+shared int alive; // count of non-terminated Fibers scheduled
+enum int MAX_EVENTS = 500;
 
 public void startloop()
 {
@@ -43,127 +86,26 @@ public void startloop()
     uint threads = threadsPerCPU;
     scheds = new SchedulerBlock[threads];
     foreach (ref sched; scheds)
-        sched = SchedulerBlock(100_000);
+        sched = SchedulerBlock();
 }
 
-extern(Windows) uint worker(void* func)
+
+public void go(void delegate() func)
 {
-    auto functor = *cast(Functor*)func;
-    functor.func();
-    return 0;
-}
-
-public void spawnLight(void delegate() func) {
-    return spawn(func);
-}
-
-public void spawnHeavy(void delegate() func) {
-    new Thread(func).start();
-}
-
-public void spawn(void delegate() func)
-{
-    ubyte[128] buf = void;
-    size_t size = buf.length;
-    PROC_THREAD_ATTRIBUTE_LIST* attrList = cast(PROC_THREAD_ATTRIBUTE_LIST*)buf.ptr;
-    wenforce(InitializeProcThreadAttributeList(attrList, 1, 0, &size), "failed to initialize proc thread");
-    scope(exit) DeleteProcThreadAttributeList(attrList);
     
-    UMS_CONTEXT* ctx;
-    wenforce(CreateUmsThreadContext(&ctx), "failed to create UMS context");
-
     // power of 2 random choices:
     size_t a = uniform!"[)"(0, scheds.length);
     size_t b = uniform!"[)"(0, scheds.length);
     uint loadA = scheds[a].assigned; // take into account active queue.size?
     uint loadB = scheds[b].assigned; // ditto
-    if (loadA < loadB) atomicOp!"+="(scheds[a].assigned, 1);
-    else atomicOp!"+="(scheds[b].assigned, 1);
-    UMS_CREATE_THREAD_ATTRIBUTES umsAttrs;
-    umsAttrs.UmsCompletionList = loadA < loadB ? scheds[a].completionList : scheds[b].completionList;
-    umsAttrs.UmsContext = ctx;
-    umsAttrs.UmsVersion = UMS_VERSION;
-
-    wenforce(UpdateProcThreadAttribute(attrList, 0, PROC_THREAD_ATTRIBUTE_UMS_THREAD, &umsAttrs, umsAttrs.sizeof, null, null), "failed to update proc thread");
-    HANDLE handle = wenforce(CreateRemoteThreadEx(GetCurrentProcess(), null, 0, &worker, new Functor(func), 0, attrList, null), "failed to create thread");
-    atomicOp!"+="(activeThreads, 1);
+    size_t c = loadA < loadB ? a : b;
+    atomicOp!"+="(scheds[c].assigned, 1);
+   
+    atomicOp!"+="(alive, 1);
 }
 
 package(photon) void schedulerEntry(size_t n)
 {
-    schedNum = n;
-    UMS_SCHEDULER_STARTUP_INFO info;
-    info.UmsVersion = UMS_VERSION;
-    info.CompletionList = scheds[n].completionList;
-    info.SchedulerProc = &umsScheduler;
-    info.SchedulerParam = null;
-    wenforce(SetThreadAffinityMask(GetCurrentThread(), 1<<n), "failed to set affinity");
-    wenforce(EnterUmsSchedulingMode(&info), "failed to enter UMS mode\n");
-}
+    wenforce(SetThreadAffinityMask(GetCurrentThread(), 1L<<n), "failed to set affinity");
 
-extern(Windows) VOID umsScheduler(UMS_SCHEDULER_REASON Reason, ULONG_PTR ActivationPayload, PVOID SchedulerParam)
-{
-    UMS_CONTEXT* ready;
-    auto completionList = scheds[schedNum].completionList;
-       logf("-----\nGot scheduled, reason: %d, schedNum: %x\n"w, Reason, schedNum);
-    if(!DequeueUmsCompletionListItems(completionList, 0, &ready)){
-        logf("Failed to dequeue ums workers!\n"w);
-        return;
-    }    
-    for (;;)
-    {
-      scheds[schedNum].lock.lock();
-      auto queue = &scheds[schedNum].queue; // struct, so take a ref
-      while (ready != null)
-      {
-          logf("Dequeued UMS thread context: %x\n"w, ready);
-          queue.push(ready);
-          ready = GetNextUmsListItem(ready);
-      }
-      scheds[schedNum].lock.unlock();
-      while(!queue.empty)
-      {
-        UMS_CONTEXT* ctx = queue.pop;
-        logf("Fetched thread context from our queue: %x\n", ctx);
-        BOOLEAN terminated;
-        uint size;
-        if(!QueryUmsThreadInformation(ctx, UMS_THREAD_INFO_CLASS.UmsThreadIsTerminated, &terminated, BOOLEAN.sizeof, &size))
-        {
-            logf("Query UMS failed: %d\n"w, GetLastError());
-            return;
-        }
-        if (!terminated)
-        {
-            auto ret = ExecuteUmsThread(ctx);
-            if (ret == ERROR_RETRY) // this UMS thread is locked, try it later
-            {
-                logf("Need retry!\n");
-                queue.push(ctx);
-            }
-            else
-            {
-                logf("Failed to execute thread: %d\n"w, GetLastError());
-                return;
-            }
-        }
-        else
-        {
-            logf("Terminated: %x\n"w, ctx);
-            //TODO: delete context or maybe cache them somewhere?
-            DeleteUmsThreadContext(ctx);
-            atomicOp!"-="(scheds[schedNum].assigned, 1);
-            atomicOp!"-="(activeThreads, 1);
-        }
-      }
-      if (activeThreads == 0)
-      {
-          logf("Shutting down\n"w);
-          return;
-      }
-      if(!DequeueUmsCompletionListItems(completionList, INFINITE, &ready))
-      {
-           logf("Failed to dequeue UMS workers!\n"w);
-           return;
-      }
-    }
 }
