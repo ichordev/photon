@@ -252,6 +252,9 @@ package(photon) void schedulerEntry(size_t n)
         }
     }
     termination.trigger();
+    foreach (ref s; scheds) {
+        s.queue.event.trigger();
+    }
 }
 
 public void go(void delegate() func) {
