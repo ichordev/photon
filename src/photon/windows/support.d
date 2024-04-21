@@ -70,6 +70,109 @@ extern(Windows) BOOL GetQueuedCompletionStatusEx(
 
 enum WSA_FLAG_OVERLAPPED  =  0x01;
 
+struct TP_POOL;
+
+alias PTP_POOL = TP_POOL*;
+
+extern(Windows) PTP_POOL CreateThreadpool(
+  PVOID reserved
+);
+
+extern(Windows) void SetThreadpoolThreadMaximum(
+  PTP_POOL ptpp,
+  DWORD    cthrdMost
+);
+
+extern(Windows) BOOL SetThreadpoolThreadMinimum(
+  PTP_POOL ptpp,
+  DWORD    cthrdMic
+);
+
+alias TP_VERSION = DWORD;
+alias PTP_VERSION = TP_VERSION*;
+
+struct TP_CALLBACK_INSTANCE;
+alias PTP_CALLBACK_INSTANCE = TP_CALLBACK_INSTANCE*;
+
+alias PTP_SIMPLE_CALLBACK = extern(Windows) VOID function(PTP_CALLBACK_INSTANCE, PVOID);
+
+enum TP_CALLBACK_PRIORITY : int {
+  TP_CALLBACK_PRIORITY_HIGH,
+  TP_CALLBACK_PRIORITY_NORMAL,
+  TP_CALLBACK_PRIORITY_LOW,
+  TP_CALLBACK_PRIORITY_INVALID,
+  TP_CALLBACK_PRIORITY_COUNT = TP_CALLBACK_PRIORITY_INVALID
+}
+
+struct TP_POOL_STACK_INFORMATION {
+  SIZE_T StackReserve;
+  SIZE_T StackCommit;
+}
+alias PTP_POOL_STACK_INFORMATION = TP_POOL_STACK_INFORMATION*;
+
+struct TP_CLEANUP_GROUP;
+alias PTP_CLEANUP_GROUP = TP_CLEANUP_GROUP*;
+
+alias PTP_CLEANUP_GROUP_CANCEL_CALLBACK = extern(Windows) VOID function(PVOID, PVOID);
+
+struct ACTIVATION_CONTEXT;
+
+struct TP_CALLBACK_ENVIRON_V3 {
+  TP_VERSION Version;
+  PTP_POOL Pool;
+  PTP_CLEANUP_GROUP CleanupGroup;
+  PTP_CLEANUP_GROUP_CANCEL_CALLBACK CleanupGroupCancelCallback;
+  PVOID RaceDll;
+  ACTIVATION_CONTEXT* ActivationContext;
+  PTP_SIMPLE_CALLBACK FinalizationCallback;
+  DWORD Flags;
+  TP_CALLBACK_PRIORITY CallbackPriority;
+  DWORD Size;
+}
+
+alias TP_CALLBACK_ENVIRON = TP_CALLBACK_ENVIRON_V3;
+alias PTP_CALLBACK_ENVIRON = TP_CALLBACK_ENVIRON*;
+
+VOID InitializeThreadpoolEnvironment(PTP_CALLBACK_ENVIRON cbe) {
+  cbe.Pool = NULL;
+  cbe.CleanupGroup = NULL;
+  cbe.CleanupGroupCancelCallback = NULL;
+  cbe.RaceDll = NULL;
+  cbe.ActivationContext = NULL;
+  cbe.FinalizationCallback = NULL;
+  cbe.Flags = 0;
+  cbe.Version = 3;
+  cbe.CallbackPriority = TP_CALLBACK_PRIORITY.TP_CALLBACK_PRIORITY_NORMAL;
+  cbe.Size = TP_CALLBACK_ENVIRON.sizeof;
+}
+
+extern(Windows) void CloseThreadpool(
+  PTP_POOL ptpp
+);
+
+// inline "function"
+VOID SetThreadpoolCallbackPool(PTP_CALLBACK_ENVIRON cbe, PTP_POOL pool) { cbe.Pool = pool; }
+
+struct TP_WORK;
+alias PTP_WORK = TP_WORK*;
+
+alias PTP_WORK_CALLBACK = extern(Windows) VOID function (PTP_CALLBACK_INSTANCE Instance, PVOID Context, PTP_WORK Work);
+
+extern(Windows) PTP_WORK CreateThreadpoolWork(
+  PTP_WORK_CALLBACK    pfnwk,
+  PVOID                pv,
+  PTP_CALLBACK_ENVIRON pcbe
+);
+
+extern(Windows) void SubmitThreadpoolWork(
+  PTP_WORK pwk
+);
+
+extern(Windows) void CloseThreadpoolWork(
+  PTP_WORK pwk
+);
+
+
 void outputToConsole(const(wchar)[] msg)
 {
     HANDLE output = GetStdHandle(STD_OUTPUT_HANDLE);

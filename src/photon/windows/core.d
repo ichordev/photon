@@ -69,11 +69,13 @@ class FiberExt : Fiber {
 
 package(photon) shared SchedulerBlock[] scheds;
 
-
-FiberExt currentFiber; 
-__gshared Map!(SOCKET, FiberExt) ioWaiters = new Map!(SOCKET, FiberExt);
+enum MAX_THREADPOOL_SIZE = 100;
+FiberExt currentFiber;
+__gshared Map!(SOCKET, FiberExt) ioWaiters = new Map!(SOCKET, FiberExt); // mapping of sockets to awaiting fiber
 __gshared RawEvent termination; // termination event, triggered once last fiber exits
 __gshared HANDLE iocp; // IO Completion port
+__gshared PTP_POOL threadPool; // for synchronious syscalls
+__gshared TP_CALLBACK_ENVIRON_V3 environ; // callback environment for the pool
 shared int alive; // count of non-terminated Fibers scheduled
 
 
@@ -86,6 +88,13 @@ public void startloop() {
     foreach(ref sched; scheds) {
         sched.queue = IntrusiveQueue!(FiberExt, RawEvent)(RawEvent(0));
     }
+    threadPool = CreateThreadpool(null);
+    wenforce(threadPool != null, "Failed to create threadpool");
+    SetThreadpoolThreadMaximum(threadPool, MAX_THREADPOOL_SIZE);
+    wenforce(SetThreadpoolThreadMinimum(threadPool, 1) == TRUE, "Failed to set threadpool minimum size");
+    InitializeThreadpoolEnvironment(&environ);
+    SetThreadpoolCallbackPool(&environ, threadPool);
+
     termination = RawEvent(false);
     iocp = CreateIoCompletionPort(cast(HANDLE)INVALID_HANDLE_VALUE, null, 0, 1);
     wenforce(iocp != null, "Failed to create IO Completion Port");
@@ -196,13 +205,38 @@ extern(Windows) SOCKET socket(int af, int type, int protocol) {
     return s;
 }
 
-extern(Windows) SOCKET accept(SOCKET s, sockaddr* addr, LPINT addrlen) {
-    logf("Intercepted accept!");
-    SOCKET resp = WSAAccept(s, addr, addrlen, null, 0);
+struct AcceptState {
+    SOCKET socket;
+    sockaddr* addr;
+    LPINT addrlen;
+    FiberExt fiber;
+}
+
+extern(Windows) VOID acceptJob(PTP_CALLBACK_INSTANCE Instance, PVOID Context, PTP_WORK Work)
+{
+    AcceptState* state = cast(AcceptState*)Context;
+    logf("Started threadpool job");
+    SOCKET resp = WSAAccept(state.socket, state.addr, state.addrlen, null, 0);
     if (resp != INVALID_SOCKET) {
         registerSocket(resp);
     }
-    return resp;
+    state.socket = resp;
+    state.fiber.schedule();
+}
+
+extern(Windows) SOCKET accept(SOCKET s, sockaddr* addr, LPINT addrlen) {
+    logf("Intercepted accept!");
+    AcceptState state;
+    state.socket = s;
+    state.addr = addr;
+    state.addrlen = addrlen;
+    state.fiber = currentFiber;
+    PTP_WORK work = CreateThreadpoolWork(&acceptJob, &state, &environ);
+    wenforce(work != null, "Failed to create work for threadpool");
+    SubmitThreadpoolWork(work);
+    FiberExt.yield();
+    CloseThreadpoolWork(work);
+    return state.socket;
 }
 
 void registerSocket(SOCKET s) {
