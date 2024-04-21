@@ -21,6 +21,7 @@ extern(Windows) SOCKET WSASocketW(
 
 // hackish, we do not use LPCONDITIONPROC
 alias LPCONDITIONPROC = void*;
+alias LPWSABUF = WSABUF*;
 
 extern(Windows) SOCKET WSAAccept(
   SOCKET          s,
@@ -32,7 +33,7 @@ extern(Windows) SOCKET WSAAccept(
 
 extern(Windows) int WSARecv(
   SOCKET                             s,
-  WSABUF                             *lpBuffers,
+  LPWSABUF                           lpBuffers,
   DWORD                              dwBufferCount,
   LPDWORD                            lpNumberOfBytesRecvd,
   LPDWORD                            lpFlags,
@@ -42,10 +43,10 @@ extern(Windows) int WSARecv(
 
 extern(Windows) int WSASend(
   SOCKET                             s,
-  WSABUF                             *lpBuffers,
+  LPWSABUF                           lpBuffers,
   DWORD                              dwBufferCount,
-  LPDWORD                            lpNumberOfBytesRecvd,
-  LPDWORD                            lpFlags,
+  LPDWORD                            lpNumberOfBytesSent,
+  DWORD                              dwFlags,
   LPWSAOVERLAPPED                    lpOverlapped,
   LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine
 );

@@ -264,3 +264,26 @@ extern(Windows) int recv(SOCKET s, void* buf, int len, int flags) {
             return ret;
     }
 }
+
+extern(Windows) int send(SOCKET s, void* buf, int len, int flags) {
+    OVERLAPPED overlapped;
+    WSABUF wsabuf = WSABUF(cast(uint)len, buf);
+    ioWaiters[s] = currentFiber;
+    uint sent = 0;
+    int ret = WSASend(s, &wsabuf, 1, &sent, flags, cast(LPWSAOVERLAPPED)&overlapped, null);
+    logf("Get send %d", ret);
+    if (ret >= 0) {
+        FiberExt.yield();
+        return sent;
+    }
+    else {
+        auto lastError = GetLastError();
+        logf("Last error = %d", lastError);
+        if (lastError == ERROR_IO_PENDING) {
+            FiberExt.yield();
+            return currentFiber.bytesTransfered;
+        }
+        else 
+            return ret;
+    }
+}
