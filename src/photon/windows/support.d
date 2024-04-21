@@ -1,116 +1,178 @@
 module photon.windows.support;
 version(Windows):
 import core.sys.windows.core;
+import core.sys.windows.winsock2;
+import std.format;
 
-//opaque structs
-struct UMS_COMPLETION_LIST;
-struct UMS_CONTEXT;
-struct PROC_THREAD_ATTRIBUTE_LIST;
-
-struct UMS_SCHEDULER_STARTUP_INFO {
-    ULONG                      UmsVersion;
-    UMS_COMPLETION_LIST*       CompletionList;
-    UmsSchedulerProc           SchedulerProc;
-    PVOID                      SchedulerParam;
-}
-
-struct UMS_CREATE_THREAD_ATTRIBUTES {
-  DWORD UmsVersion;
-  PVOID UmsContext;
-  PVOID UmsCompletionList;
-}
-
-enum UMS_SCHEDULER_REASON: uint {
-  UmsSchedulerStartup = 0,
-  UmsSchedulerThreadBlocked = 1,
-  UmsSchedulerThreadYield = 2
-}
-
-enum UMS_VERSION =  0x0100;
-enum
-    PROC_THREAD_ATTRIBUTE_NUMBER = 0x0000FFFF,
-    PROC_THREAD_ATTRIBUTE_THREAD = 0x00010000,    // Attribute may be used with thread creation
-    PROC_THREAD_ATTRIBUTE_INPUT = 0x00020000,     // Attribute is input only
-    PROC_THREAD_ATTRIBUTE_ADDITIVE = 0x00040000;  // Attribute may be "accumulated," e.g. bitmasks, counters, etc.
-
-enum
-    ProcThreadAttributeParentProcess                = 0,
-    ProcThreadAttributeHandleList                   = 2,
-    ProcThreadAttributeGroupAffinity                = 3,
-    ProcThreadAttributePreferredNode                = 4,
-    ProcThreadAttributeIdealProcessor               = 5,
-    ProcThreadAttributeUmsThread                    = 6,
-    ProcThreadAttributeMitigationPolicy             = 7;
-
- enum UMS_THREAD_INFO_CLASS: uint { 
-  UmsThreadInvalidInfoClass  = 0,
-  UmsThreadUserContext       = 1,
-  UmsThreadPriority          = 2,
-  UmsThreadAffinity          = 3,
-  UmsThreadTeb               = 4,
-  UmsThreadIsSuspended       = 5,
-  UmsThreadIsTerminated      = 6,
-  UmsThreadMaxInfoClass      = 7
-}
-
-uint ProcThreadAttributeValue(uint Number, bool Thread, bool Input, bool Additive)
+struct WSABUF 
 {
-    return (Number & PROC_THREAD_ATTRIBUTE_NUMBER) | 
-     (Thread != FALSE ? PROC_THREAD_ATTRIBUTE_THREAD : 0) | 
-     (Input != FALSE ? PROC_THREAD_ATTRIBUTE_INPUT : 0) | 
-     (Additive != FALSE ? PROC_THREAD_ATTRIBUTE_ADDITIVE : 0);
+    uint length;
+    void* buf;
 }
 
-enum PROC_THREAD_ATTRIBUTE_UMS_THREAD = ProcThreadAttributeValue(ProcThreadAttributeUmsThread, true, true, false);
-
-extern(Windows) BOOL EnterUmsSchedulingMode(UMS_SCHEDULER_STARTUP_INFO* SchedulerStartupInfo);
-extern(Windows) BOOL UmsThreadYield(PVOID SchedulerParam);
-extern(Windows) BOOL DequeueUmsCompletionListItems(UMS_COMPLETION_LIST* UmsCompletionList, DWORD WaitTimeOut, UMS_CONTEXT** UmsThreadList);
-extern(Windows) UMS_CONTEXT* GetNextUmsListItem(UMS_CONTEXT* UmsContext);
-extern(Windows) BOOL ExecuteUmsThread(UMS_CONTEXT* UmsThread);
-extern(Windows) BOOL CreateUmsCompletionList(UMS_COMPLETION_LIST** UmsCompletionList);
-extern(Windows) BOOL CreateUmsThreadContext(UMS_CONTEXT** lpUmsThread);
-extern(Windows) BOOL DeleteUmsThreadContext(UMS_CONTEXT* UmsThread);
-extern(Windows) BOOL QueryUmsThreadInformation(
-    UMS_CONTEXT*          UmsThread,
-    UMS_THREAD_INFO_CLASS UmsThreadInfoClass,
-    PVOID                 UmsThreadInformation,
-    ULONG                 UmsThreadInformationLength,
-    PULONG                ReturnLength
+extern(Windows) SOCKET WSASocketW(
+  int                af,
+  int                type,
+  int                protocol,
+  void*              lpProtocolInfo,
+  WORD               g,
+  DWORD              dwFlags
 );
 
-extern(Windows) BOOL InitializeProcThreadAttributeList(
-  PROC_THREAD_ATTRIBUTE_LIST* lpAttributeList,
-  DWORD                        dwAttributeCount,
-  DWORD                        dwFlags,
-  PSIZE_T                      lpSize
+// hackish, we do not use LPCONDITIONPROC
+alias LPCONDITIONPROC = void*;
+alias LPWSABUF = WSABUF*;
+
+extern(Windows) SOCKET WSAAccept(
+  SOCKET          s,
+  sockaddr        *addr,
+  LPINT           addrlen,
+  LPCONDITIONPROC lpfnCondition,
+  DWORD_PTR       dwCallbackData
 );
 
-extern(Windows) VOID DeleteProcThreadAttributeList(PROC_THREAD_ATTRIBUTE_LIST* lpAttributeList);
-extern(Windows) BOOL UpdateProcThreadAttribute(
-  PROC_THREAD_ATTRIBUTE_LIST* lpAttributeList,
-  DWORD                        dwFlags,
-  DWORD_PTR                    Attribute,
-  PVOID                        lpValue,
-  SIZE_T                       cbSize,
-  PVOID                        lpPreviousValue,
-  PSIZE_T                      lpReturnSize
+extern(Windows) int WSARecv(
+  SOCKET                             s,
+  LPWSABUF                           lpBuffers,
+  DWORD                              dwBufferCount,
+  LPDWORD                            lpNumberOfBytesRecvd,
+  LPDWORD                            lpFlags,
+  LPWSAOVERLAPPED                    lpOverlapped,
+  LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine
 );
 
-extern(Windows) HANDLE CreateRemoteThreadEx(
-  HANDLE                       hProcess,
-  PSECURITY_ATTRIBUTES        lpThreadAttributes,
-  SIZE_T                       dwStackSize,
-  LPTHREAD_START_ROUTINE       lpStartAddress,
-  LPVOID                       lpParameter,
-  DWORD                        dwCreationFlags,
-  PROC_THREAD_ATTRIBUTE_LIST*  lpAttributeList,
-  LPDWORD                      lpThreadId
+extern(Windows) int WSASend(
+  SOCKET                             s,
+  LPWSABUF                           lpBuffers,
+  DWORD                              dwBufferCount,
+  LPDWORD                            lpNumberOfBytesSent,
+  DWORD                              dwFlags,
+  LPWSAOVERLAPPED                    lpOverlapped,
+  LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine
 );
 
-enum STACK_SIZE_PARAM_IS_A_RESERVATION = 0x00010000;
+struct OVERLAPPED_ENTRY {
+  ULONG_PTR    lpCompletionKey;
+  LPOVERLAPPED lpOverlapped;
+  ULONG_PTR    Internal;
+  DWORD        dwNumberOfBytesTransferred;
+}
 
-alias UmsSchedulerProc = extern(Windows) VOID function(UMS_SCHEDULER_REASON Reason, ULONG_PTR ActivationPayload, PVOID SchedulerParam);
+alias LPOVERLAPPED_ENTRY = OVERLAPPED_ENTRY*;
+
+extern(Windows) BOOL GetQueuedCompletionStatusEx(
+  HANDLE             CompletionPort,
+  LPOVERLAPPED_ENTRY lpCompletionPortEntries,
+  ULONG              ulCount,
+  PULONG             ulNumEntriesRemoved,
+  DWORD              dwMilliseconds,
+  BOOL               fAlertable
+);
+
+enum WSA_FLAG_OVERLAPPED  =  0x01;
+
+struct TP_POOL;
+
+alias PTP_POOL = TP_POOL*;
+
+extern(Windows) PTP_POOL CreateThreadpool(
+  PVOID reserved
+);
+
+extern(Windows) void SetThreadpoolThreadMaximum(
+  PTP_POOL ptpp,
+  DWORD    cthrdMost
+);
+
+extern(Windows) BOOL SetThreadpoolThreadMinimum(
+  PTP_POOL ptpp,
+  DWORD    cthrdMic
+);
+
+alias TP_VERSION = DWORD;
+alias PTP_VERSION = TP_VERSION*;
+
+struct TP_CALLBACK_INSTANCE;
+alias PTP_CALLBACK_INSTANCE = TP_CALLBACK_INSTANCE*;
+
+alias PTP_SIMPLE_CALLBACK = extern(Windows) VOID function(PTP_CALLBACK_INSTANCE, PVOID);
+
+enum TP_CALLBACK_PRIORITY : int {
+  TP_CALLBACK_PRIORITY_HIGH,
+  TP_CALLBACK_PRIORITY_NORMAL,
+  TP_CALLBACK_PRIORITY_LOW,
+  TP_CALLBACK_PRIORITY_INVALID,
+  TP_CALLBACK_PRIORITY_COUNT = TP_CALLBACK_PRIORITY_INVALID
+}
+
+struct TP_POOL_STACK_INFORMATION {
+  SIZE_T StackReserve;
+  SIZE_T StackCommit;
+}
+alias PTP_POOL_STACK_INFORMATION = TP_POOL_STACK_INFORMATION*;
+
+struct TP_CLEANUP_GROUP;
+alias PTP_CLEANUP_GROUP = TP_CLEANUP_GROUP*;
+
+alias PTP_CLEANUP_GROUP_CANCEL_CALLBACK = extern(Windows) VOID function(PVOID, PVOID);
+
+struct ACTIVATION_CONTEXT;
+
+struct TP_CALLBACK_ENVIRON_V3 {
+  TP_VERSION Version;
+  PTP_POOL Pool;
+  PTP_CLEANUP_GROUP CleanupGroup;
+  PTP_CLEANUP_GROUP_CANCEL_CALLBACK CleanupGroupCancelCallback;
+  PVOID RaceDll;
+  ACTIVATION_CONTEXT* ActivationContext;
+  PTP_SIMPLE_CALLBACK FinalizationCallback;
+  DWORD Flags;
+  TP_CALLBACK_PRIORITY CallbackPriority;
+  DWORD Size;
+}
+
+alias TP_CALLBACK_ENVIRON = TP_CALLBACK_ENVIRON_V3;
+alias PTP_CALLBACK_ENVIRON = TP_CALLBACK_ENVIRON*;
+
+VOID InitializeThreadpoolEnvironment(PTP_CALLBACK_ENVIRON cbe) {
+  cbe.Pool = NULL;
+  cbe.CleanupGroup = NULL;
+  cbe.CleanupGroupCancelCallback = NULL;
+  cbe.RaceDll = NULL;
+  cbe.ActivationContext = NULL;
+  cbe.FinalizationCallback = NULL;
+  cbe.Flags = 0;
+  cbe.Version = 3;
+  cbe.CallbackPriority = TP_CALLBACK_PRIORITY.TP_CALLBACK_PRIORITY_NORMAL;
+  cbe.Size = TP_CALLBACK_ENVIRON.sizeof;
+}
+
+extern(Windows) void CloseThreadpool(
+  PTP_POOL ptpp
+);
+
+// inline "function"
+VOID SetThreadpoolCallbackPool(PTP_CALLBACK_ENVIRON cbe, PTP_POOL pool) { cbe.Pool = pool; }
+
+struct TP_WORK;
+alias PTP_WORK = TP_WORK*;
+
+alias PTP_WORK_CALLBACK = extern(Windows) VOID function (PTP_CALLBACK_INSTANCE Instance, PVOID Context, PTP_WORK Work);
+
+extern(Windows) PTP_WORK CreateThreadpoolWork(
+  PTP_WORK_CALLBACK    pfnwk,
+  PVOID                pv,
+  PTP_CALLBACK_ENVIRON pcbe
+);
+
+extern(Windows) void SubmitThreadpoolWork(
+  PTP_WORK pwk
+);
+
+extern(Windows) void CloseThreadpoolWork(
+  PTP_WORK pwk
+);
+
 
 void outputToConsole(const(wchar)[] msg)
 {
@@ -121,10 +183,12 @@ void outputToConsole(const(wchar)[] msg)
 
 void logf(T...)(const(wchar)[] fmt, T args)
 {
-    debug try {
+    debug(photon) try {
         formattedWrite(&outputToConsole, fmt, args);
+        formattedWrite(&outputToConsole, "\n");
     }
     catch (Exception e) {
         outputToConsole("ARGH!"w);
     }
 }
+

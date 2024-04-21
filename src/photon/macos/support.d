@@ -1,5 +1,5 @@
 module photon.macos.support;
-
+version(OSX):
 import core.sys.posix.unistd;
 import core.stdc.errno;
 import core.stdc.stdlib;

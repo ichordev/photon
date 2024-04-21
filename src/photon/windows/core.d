@@ -3,167 +3,287 @@ version(Windows):
 private:
 
 import core.sys.windows.core;
+import core.sys.windows.winsock2;
 import core.atomic;
-import core.internal.spinlock;
-import core.stdc.stdlib;
 import core.thread;
+import core.internal.spinlock;
 import std.exception;
 import std.windows.syserror;
 import std.random;
-import std.format;
+import std.stdio;
 
+import rewind.map;
 
-struct SchedulerBlock
-{
-    AlignedSpinLock lock; // lock around the queue
-    UMS_COMPLETION_LIST* completionList;
-    RingQueue!(UMS_CONTEXT*) queue; // queue has the number of outstanding threads
-    shared uint assigned; // total assigned UMS threads
+import photon.ds.intrusive_queue;
+import photon.windows.support;
 
-    this(int size)
+shared struct RawEvent {
+nothrow:
+    this(bool signaled) {
+        ev = cast(shared(HANDLE))CreateEventA(null, FALSE, signaled, null);
+        assert(ev != null, "Failed to create RawEvent");
+    }
+
+    void waitAndReset() {
+        auto ret = WaitForSingleObject(cast(HANDLE)ev, INFINITE);
+        assert(ret == WAIT_OBJECT_0, "Failed while waiting on event");
+    }
+    
+    void trigger() { 
+        auto ret = SetEvent(cast(HANDLE)ev);
+        assert(ret != 0);
+    }
+    
+    HANDLE ev;
+}
+
+struct SchedulerBlock {
+    shared IntrusiveQueue!(FiberExt, RawEvent) queue;
+    shared uint assigned;
+    size_t[1] padding;
+}
+static assert(SchedulerBlock.sizeof == 64);
+
+class FiberExt : Fiber { 
+    FiberExt next;
+    uint numScheduler;
+    int bytesTransfered;
+
+    enum PAGESIZE = 4096;
+    
+    this(void function() fn, uint numSched) nothrow {
+        super(fn);
+        numScheduler = numSched;
+    }
+
+    this(void delegate() dg, uint numSched) nothrow {
+        super(dg);
+        numScheduler = numSched;
+    }
+
+    void schedule() nothrow
     {
-        lock = AlignedSpinLock(SpinLock.Contention.brief);
-        queue = RingQueue!(UMS_CONTEXT*)(size);
-        wenforce(CreateUmsCompletionList(&completionList), "failed to create UMS completion");
+        scheds[numScheduler].queue.push(this);
     }
 }
 
-package(photon) __gshared SchedulerBlock[] scheds;
-shared uint activeThreads;
-size_t schedNum; // (TLS) number of scheduler
+package(photon) shared SchedulerBlock[] scheds;
 
-struct Functor
-{
-	void delegate() func;
-}
+enum MAX_THREADPOOL_SIZE = 100;
+FiberExt currentFiber;
+__gshared Map!(SOCKET, FiberExt) ioWaiters = new Map!(SOCKET, FiberExt); // mapping of sockets to awaiting fiber
+__gshared RawEvent termination; // termination event, triggered once last fiber exits
+__gshared HANDLE iocp; // IO Completion port
+__gshared PTP_POOL threadPool; // for synchronious syscalls
+__gshared TP_CALLBACK_ENVIRON_V3 environ; // callback environment for the pool
+shared int alive; // count of non-terminated Fibers scheduled
 
-public void startloop()
-{
-    import core.cpuid;
-    uint threads = threadsPerCPU;
+
+public void startloop() {
+    SYSTEM_INFO info;
+    GetSystemInfo(&info);
+    // TODO: handle NUMA case
+    uint threads = info.dwNumberOfProcessors;
     scheds = new SchedulerBlock[threads];
-    foreach (ref sched; scheds)
-        sched = SchedulerBlock(100_000);
+    foreach(ref sched; scheds) {
+        sched.queue = IntrusiveQueue!(FiberExt, RawEvent)(RawEvent(0));
+    }
+    threadPool = CreateThreadpool(null);
+    wenforce(threadPool != null, "Failed to create threadpool");
+    SetThreadpoolThreadMaximum(threadPool, MAX_THREADPOOL_SIZE);
+    wenforce(SetThreadpoolThreadMinimum(threadPool, 1) == TRUE, "Failed to set threadpool minimum size");
+    InitializeThreadpoolEnvironment(&environ);
+    SetThreadpoolCallbackPool(&environ, threadPool);
+
+    termination = RawEvent(false);
+    iocp = CreateIoCompletionPort(cast(HANDLE)INVALID_HANDLE_VALUE, null, 0, 1);
+    wenforce(iocp != null, "Failed to create IO Completion Port");
+    wenforce(CreateThread(null, 0, &eventLoop, null, 0, null) != null, "Failed to start event loop");
 }
 
-extern(Windows) uint worker(void* func)
-{
-    auto functor = *cast(Functor*)func;
-    functor.func();
-    return 0;
-}
 
-public void spawnLight(void delegate() func) {
-    return spawn(func);
-}
-
-public void spawnHeavy(void delegate() func) {
-    new Thread(func).start();
-}
-
-public void spawn(void delegate() func)
-{
-    ubyte[128] buf = void;
-    size_t size = buf.length;
-    PROC_THREAD_ATTRIBUTE_LIST* attrList = cast(PROC_THREAD_ATTRIBUTE_LIST*)buf.ptr;
-    wenforce(InitializeProcThreadAttributeList(attrList, 1, 0, &size), "failed to initialize proc thread");
-    scope(exit) DeleteProcThreadAttributeList(attrList);
-    
-    UMS_CONTEXT* ctx;
-    wenforce(CreateUmsThreadContext(&ctx), "failed to create UMS context");
-
-    // power of 2 random choices:
-    size_t a = uniform!"[)"(0, scheds.length);
-    size_t b = uniform!"[)"(0, scheds.length);
-    uint loadA = scheds[a].assigned; // take into account active queue.size?
-    uint loadB = scheds[b].assigned; // ditto
-    if (loadA < loadB) atomicOp!"+="(scheds[a].assigned, 1);
-    else atomicOp!"+="(scheds[b].assigned, 1);
-    UMS_CREATE_THREAD_ATTRIBUTES umsAttrs;
-    umsAttrs.UmsCompletionList = loadA < loadB ? scheds[a].completionList : scheds[b].completionList;
-    umsAttrs.UmsContext = ctx;
-    umsAttrs.UmsVersion = UMS_VERSION;
-
-    wenforce(UpdateProcThreadAttribute(attrList, 0, PROC_THREAD_ATTRIBUTE_UMS_THREAD, &umsAttrs, umsAttrs.sizeof, null, null), "failed to update proc thread");
-    HANDLE handle = wenforce(CreateRemoteThreadEx(GetCurrentProcess(), null, 0, &worker, new Functor(func), 0, attrList, null), "failed to create thread");
-    atomicOp!"+="(activeThreads, 1);
+public void go(void delegate() func) {
+    import std.random;
+    uint choice;
+    if (scheds.length == 1) choice = 0;
+    else {
+        uint a = uniform!"[)"(0, cast(uint)scheds.length);
+        uint b = uniform!"[)"(0, cast(uint)scheds.length-1);
+        if (a == b) b = cast(uint)scheds.length-1;
+        uint loadA = scheds[a].assigned;
+        uint loadB = scheds[b].assigned;
+        if (loadA < loadB) choice = a;
+        else choice = b;
+    }
+    atomicOp!"+="(scheds[choice].assigned, 1);
+    atomicOp!"+="(alive, 1);
+    auto f = new FiberExt(func, choice);
+    logf("Assigned %x -> %d scheduler", cast(void*)f, choice);
+    f.schedule();
 }
 
 package(photon) void schedulerEntry(size_t n)
 {
-    schedNum = n;
-    UMS_SCHEDULER_STARTUP_INFO info;
-    info.UmsVersion = UMS_VERSION;
-    info.CompletionList = scheds[n].completionList;
-    info.SchedulerProc = &umsScheduler;
-    info.SchedulerParam = null;
-    wenforce(SetThreadAffinityMask(GetCurrentThread(), 1<<n), "failed to set affinity");
-    wenforce(EnterUmsSchedulingMode(&info), "failed to enter UMS mode\n");
+    // TODO: handle NUMA case
+    wenforce(SetThreadAffinityMask(GetCurrentThread(), 1L<<n), "failed to set affinity");
+    shared SchedulerBlock* sched = scheds.ptr + n;
+    while (alive > 0) {
+        sched.queue.event.waitAndReset();
+        for(;;) {
+            FiberExt f = sched.queue.drain();
+            if (f is null) break; // drained an empty queue, time to sleep
+            do {
+                auto next = f.next; //save next, it will be reused on scheduling
+                currentFiber = f;
+                logf("Fiber %x started", cast(void*)f);
+                try {
+                    f.call();
+                }
+                catch (Exception e) {
+                    stderr.writeln(e);
+                    atomicOp!"-="(alive, 1);
+                }
+                if (f.state == FiberExt.State.TERM) {
+                    logf("Fiber %s terminated", cast(void*)f);
+                    atomicOp!"-="(alive, 1);
+                }
+                f = next;
+            } while(f !is null);
+        }
+    }
+    termination.trigger();
+    foreach (ref s; scheds) {
+        s.queue.event.trigger();
+    }
 }
 
-extern(Windows) VOID umsScheduler(UMS_SCHEDULER_REASON Reason, ULONG_PTR ActivationPayload, PVOID SchedulerParam)
-{
-    UMS_CONTEXT* ready;
-    auto completionList = scheds[schedNum].completionList;
-       logf("-----\nGot scheduled, reason: %d, schedNum: %x\n"w, Reason, schedNum);
-    if(!DequeueUmsCompletionListItems(completionList, 0, &ready)){
-        logf("Failed to dequeue ums workers!\n"w);
-        return;
-    }    
-    for (;;)
-    {
-      scheds[schedNum].lock.lock();
-      auto queue = &scheds[schedNum].queue; // struct, so take a ref
-      while (ready != null)
-      {
-          logf("Dequeued UMS thread context: %x\n"w, ready);
-          queue.push(ready);
-          ready = GetNextUmsListItem(ready);
-      }
-      scheds[schedNum].lock.unlock();
-      while(!queue.empty)
-      {
-        UMS_CONTEXT* ctx = queue.pop;
-        logf("Fetched thread context from our queue: %x\n", ctx);
-        BOOLEAN terminated;
-        uint size;
-        if(!QueryUmsThreadInformation(ctx, UMS_THREAD_INFO_CLASS.UmsThreadIsTerminated, &terminated, BOOLEAN.sizeof, &size))
-        {
-            logf("Query UMS failed: %d\n"w, GetLastError());
-            return;
+enum int MAX_COMPLETIONS = 500;
+
+extern(Windows) uint eventLoop(void* param) {
+    HANDLE[2] events;
+    events[0] = iocp;
+    events[1] = cast(HANDLE)termination.ev;
+    logf("Started event loop! IOCP = %x termination = %x", iocp, termination.ev);
+    for (;;) {
+        auto ret = WaitForMultipleObjects(2, events.ptr, FALSE, INFINITE);
+        logf("Got signalled in event loop %d", ret);
+        if (ret == WAIT_OBJECT_0) { // iocp
+            OVERLAPPED_ENTRY[MAX_COMPLETIONS] entries = void;
+            uint count = 0;
+            while(GetQueuedCompletionStatusEx(iocp, entries.ptr, MAX_COMPLETIONS, &count, 0, FALSE)) {
+                logf("Dequeued I/O events=%d", count);
+                foreach (e; entries[0..count]) {
+                    SOCKET sock = cast(SOCKET)e.lpCompletionKey;
+                    FiberExt fiber = ioWaiters[sock];
+                    fiber.bytesTransfered = cast(int)e.dwNumberOfBytesTransferred;
+                    fiber.schedule();
+                }
+                if (count < MAX_COMPLETIONS) break;
+            }
         }
-        if (!terminated)
-        {
-            auto ret = ExecuteUmsThread(ctx);
-            if (ret == ERROR_RETRY) // this UMS thread is locked, try it later
-            {
-                logf("Need retry!\n");
-                queue.push(ctx);
-            }
-            else
-            {
-                logf("Failed to execute thread: %d\n"w, GetLastError());
-                return;
-            }
+        else if (ret == WAIT_OBJECT_0 + 1) { // termination
+            break;
+        }
+        else {
+            logf("Failed to wait for multiple objects: %x", ret);
+            break;
+        }
+    }
+    ExitThread(0);
+    return 0;
+}
+
+
+// ===========================================================================
+// INTERCEPTS
+// ===========================================================================
+
+extern(Windows) SOCKET socket(int af, int type, int protocol) {
+    logf("Intercepted socket!");
+    SOCKET s = WSASocketW(af, type, protocol, null, 0, WSA_FLAG_OVERLAPPED);
+    registerSocket(s);
+    return s;
+}
+
+struct AcceptState {
+    SOCKET socket;
+    sockaddr* addr;
+    LPINT addrlen;
+    FiberExt fiber;
+}
+
+extern(Windows) VOID acceptJob(PTP_CALLBACK_INSTANCE Instance, PVOID Context, PTP_WORK Work)
+{
+    AcceptState* state = cast(AcceptState*)Context;
+    logf("Started threadpool job");
+    SOCKET resp = WSAAccept(state.socket, state.addr, state.addrlen, null, 0);
+    if (resp != INVALID_SOCKET) {
+        registerSocket(resp);
+    }
+    state.socket = resp;
+    state.fiber.schedule();
+}
+
+extern(Windows) SOCKET accept(SOCKET s, sockaddr* addr, LPINT addrlen) {
+    logf("Intercepted accept!");
+    AcceptState state;
+    state.socket = s;
+    state.addr = addr;
+    state.addrlen = addrlen;
+    state.fiber = currentFiber;
+    PTP_WORK work = CreateThreadpoolWork(&acceptJob, &state, &environ);
+    wenforce(work != null, "Failed to create work for threadpool");
+    SubmitThreadpoolWork(work);
+    FiberExt.yield();
+    CloseThreadpoolWork(work);
+    return state.socket;
+}
+
+void registerSocket(SOCKET s) {
+    HANDLE port = iocp;
+    wenforce(CreateIoCompletionPort(cast(void*)s, port, cast(size_t)s, 0) == port, "failed to register I/O completion");
+}
+
+extern(Windows) int recv(SOCKET s, void* buf, int len, int flags) {
+    OVERLAPPED overlapped;
+    WSABUF wsabuf = WSABUF(cast(uint)len, buf);
+    ioWaiters[s] = currentFiber;
+    int ret = WSARecv(s, &wsabuf, 1, null, cast(uint*)&flags, cast(LPWSAOVERLAPPED)&overlapped, null);
+    logf("Got recv %d", ret);
+    if (ret >= 0) {
+        return ret;
+    }
+    else {
+        auto lastError = GetLastError();
+        logf("Last error = %d", lastError);
+        if (lastError == ERROR_IO_PENDING) {
+            FiberExt.yield();
+            return currentFiber.bytesTransfered;
         }
         else
-        {
-            logf("Terminated: %x\n"w, ctx);
-            //TODO: delete context or maybe cache them somewhere?
-            DeleteUmsThreadContext(ctx);
-            atomicOp!"-="(scheds[schedNum].assigned, 1);
-            atomicOp!"-="(activeThreads, 1);
+            return ret;
+    }
+}
+
+extern(Windows) int send(SOCKET s, void* buf, int len, int flags) {
+    OVERLAPPED overlapped;
+    WSABUF wsabuf = WSABUF(cast(uint)len, buf);
+    ioWaiters[s] = currentFiber;
+    uint sent = 0;
+    int ret = WSASend(s, &wsabuf, 1, &sent, flags, cast(LPWSAOVERLAPPED)&overlapped, null);
+    logf("Get send %d", ret);
+    if (ret >= 0) {
+        FiberExt.yield();
+        return sent;
+    }
+    else {
+        auto lastError = GetLastError();
+        logf("Last error = %d", lastError);
+        if (lastError == ERROR_IO_PENDING) {
+            FiberExt.yield();
+            return currentFiber.bytesTransfered;
         }
-      }
-      if (activeThreads == 0)
-      {
-          logf("Shutting down\n"w);
-          return;
-      }
-      if(!DequeueUmsCompletionListItems(completionList, INFINITE, &ready))
-      {
-           logf("Failed to dequeue UMS workers!\n"w);
-           return;
-      }
+        else 
+            return ret;
     }
 }
