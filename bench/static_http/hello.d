@@ -3,7 +3,8 @@
     {
 	    "name" : "hello",
         "dependencies": {
-		    "photon": { "path" : "../.." }
+		    "photon": { "path" : "../.." },
+            "photon-http": "~>0.4.5"
         }
     }
 +/
@@ -18,14 +19,14 @@ import std.socket;
 import std.uni;
 import core.thread;
 
-import photon;
+import photon, photon.http;
 
 class HelloWorldProcessor : HttpProcessor {
     HttpHeader[] headers = [HttpHeader("Content-Type", "text/plain; charset=utf-8")];
 
     this(Socket sock){ super(sock); }
     
-    override void onComplete(HttpRequest req) {
+    override void handle(HttpRequest req) {
         respondWith("Hello, world!", 200, headers);
     }
 }

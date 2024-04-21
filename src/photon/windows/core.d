@@ -248,10 +248,12 @@ extern(Windows) int recv(SOCKET s, void* buf, int len, int flags) {
     OVERLAPPED overlapped;
     WSABUF wsabuf = WSABUF(cast(uint)len, buf);
     ioWaiters[s] = currentFiber;
-    int ret = WSARecv(s, &wsabuf, 1, null, cast(uint*)&flags, cast(LPWSAOVERLAPPED)&overlapped, null);
+    uint received = 0;
+    int ret = WSARecv(s, &wsabuf, 1, &received, cast(uint*)&flags, cast(LPWSAOVERLAPPED)&overlapped, null);
     logf("Got recv %d", ret);
     if (ret >= 0) {
-        return ret;
+        FiberExt.yield();
+        return received;
     }
     else {
         auto lastError = GetLastError();
