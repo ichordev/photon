@@ -1,3 +1,17 @@
+/+ dub.json:
+    {
+	"authors": [
+		"Dmitry Olshansky"
+	],
+	"copyright": "Copyright © 2024, Dmitry Olshansky",
+	"dependencies": {
+		"photon": { "path": ".." }
+	},
+	"description": "Curl download - a simple example of using std.net.curl with Photon",
+	"license": "BOOST",
+	"name": "curl_download"
+}
++/
 import std.algorithm, std.net.curl, std.string, std.datetime.stopwatch, std.range, std.stdio;
 import std.file : remove;
 import core.thread;

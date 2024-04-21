@@ -1,3 +1,17 @@
+/+ dub.json:
+    {
+	"authors": [
+		"Dmitry Olshansky"
+	],
+	"copyright": "Copyright © 2024, Dmitry Olshansky",
+	"dependencies": {
+		"photon": { "path": ".." }
+	},
+	"description": "Echo server - a simple server that sends whatever it receives",
+	"license": "BOOST",
+	"name": "echo_server"
+}
++/
 module echo_server;
 
 import std.stdio;

@@ -19,6 +19,17 @@ extern(Windows) SOCKET WSASocketW(
   DWORD              dwFlags
 );
 
+// hackish, we do not use LPCONDITIONPROC
+alias LPCONDITIONPROC = void*;
+
+extern(Windows) SOCKET WSAAccept(
+  SOCKET          s,
+  sockaddr        *addr,
+  LPINT           addrlen,
+  LPCONDITIONPROC lpfnCondition,
+  DWORD_PTR       dwCallbackData
+);
+
 extern(Windows) int WSARecv(
   SOCKET                             s,
   WSABUF                             *lpBuffers,
@@ -68,7 +79,7 @@ void outputToConsole(const(wchar)[] msg)
 
 void logf(T...)(const(wchar)[] fmt, T args)
 {
-    debug try {
+    debug(photon) try {
         formattedWrite(&outputToConsole, fmt, args);
         formattedWrite(&outputToConsole, "\n");
     }
@@ -76,3 +87,4 @@ void logf(T...)(const(wchar)[] fmt, T args)
         outputToConsole("ARGH!"w);
     }
 }
+

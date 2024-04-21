@@ -6,10 +6,13 @@ import core.sys.windows.core;
 import core.sys.windows.winsock2;
 import core.atomic;
 import core.thread;
+import core.internal.spinlock;
 import std.exception;
 import std.windows.syserror;
 import std.random;
 import std.stdio;
+
+import rewind.map;
 
 import photon.ds.intrusive_queue;
 import photon.windows.support;
@@ -66,7 +69,9 @@ class FiberExt : Fiber {
 
 package(photon) shared SchedulerBlock[] scheds;
 
+
 FiberExt currentFiber; 
+__gshared Map!(SOCKET, FiberExt) ioWaiters = new Map!(SOCKET, FiberExt);
 __gshared RawEvent termination; // termination event, triggered once last fiber exits
 __gshared HANDLE iocp; // IO Completion port
 shared int alive; // count of non-terminated Fibers scheduled
@@ -149,15 +154,18 @@ extern(Windows) uint eventLoop(void* param) {
     HANDLE[2] events;
     events[0] = iocp;
     events[1] = cast(HANDLE)termination.ev;
+    logf("Started event loop! IOCP = %x termination = %x", iocp, termination.ev);
     for (;;) {
         auto ret = WaitForMultipleObjects(2, events.ptr, FALSE, INFINITE);
+        logf("Got signalled in event loop %d", ret);
         if (ret == WAIT_OBJECT_0) { // iocp
             OVERLAPPED_ENTRY[MAX_COMPLETIONS] entries = void;
             uint count = 0;
             while(GetQueuedCompletionStatusEx(iocp, entries.ptr, MAX_COMPLETIONS, &count, 0, FALSE)) {
                 logf("Dequeued I/O events=%d", count);
                 foreach (e; entries[0..count]) {
-                    FiberExt fiber = *cast(FiberExt*)&e.lpCompletionKey;
+                    SOCKET sock = cast(SOCKET)e.lpCompletionKey;
+                    FiberExt fiber = ioWaiters[sock];
                     fiber.bytesTransfered = cast(int)e.dwNumberOfBytesTransferred;
                     fiber.schedule();
                 }
@@ -188,22 +196,37 @@ extern(Windows) SOCKET socket(int af, int type, int protocol) {
     return s;
 }
 
+extern(Windows) SOCKET accept(SOCKET s, sockaddr* addr, LPINT addrlen) {
+    logf("Intercepted accept!");
+    SOCKET resp = WSAAccept(s, addr, addrlen, null, 0);
+    if (resp != INVALID_SOCKET) {
+        registerSocket(resp);
+    }
+    return resp;
+}
+
 void registerSocket(SOCKET s) {
     HANDLE port = iocp;
-    wenforce(CreateIoCompletionPort(cast(void*)s, port, cast(size_t)cast(void*)currentFiber, 0) == port, "failed to register I/O completion");
+    wenforce(CreateIoCompletionPort(cast(void*)s, port, cast(size_t)s, 0) == port, "failed to register I/O completion");
 }
 
 extern(Windows) int recv(SOCKET s, void* buf, int len, int flags) {
     OVERLAPPED overlapped;
     WSABUF wsabuf = WSABUF(cast(uint)len, buf);
-    
+    ioWaiters[s] = currentFiber;
     int ret = WSARecv(s, &wsabuf, 1, null, cast(uint*)&flags, cast(LPWSAOVERLAPPED)&overlapped, null);
-    logf("Got recv %d error: %d", ret, GetLastError());
+    logf("Got recv %d", ret);
     if (ret >= 0) {
         return ret;
     }
     else {
-        FiberExt.yield();
-        return currentFiber.bytesTransfered;
+        auto lastError = GetLastError();
+        logf("Last error = %d", lastError);
+        if (lastError == ERROR_IO_PENDING) {
+            FiberExt.yield();
+            return currentFiber.bytesTransfered;
+        }
+        else
+            return ret;
     }
 }
