@@ -1,3 +1,12 @@
+#!/usr/bin/env dub
+/+ dub.json:
+    {
+	    "name" : "hello",
+        "dependencies": {
+            "photon-http": "~>0.4.5"
+        }
+    }
++/
 import std.algorithm;
 import std.conv;
 import std.datetime;
@@ -9,13 +18,15 @@ import std.socket;
 import std.uni;
 import core.thread;
 
-import utils.http_server;
+import photon.http;
 
 class HelloWorldProcessor : HttpProcessor {
+    HttpHeader[] headers = [HttpHeader("Content-Type", "text/plain; charset=utf-8")];
+
     this(Socket sock){ super(sock); }
     
-    override void onComplete(HttpRequest req) {
-        respondWith("Hello, world!", 200);
+    override void handle(HttpRequest req) {
+        respondWith("Hello, world!", 200, headers);
     }
 }
 
@@ -50,9 +61,5 @@ void server() {
 }
 
 void main() {
-    version(Windows) {
-        import core.memory;
-        GC.disable(); // temporary for Win64 UMS threading
-    }
     new Thread(() => server()).start();
 }

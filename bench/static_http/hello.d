@@ -33,7 +33,12 @@ class HelloWorldProcessor : HttpProcessor {
 
 void server_worker(Socket client) {
     scope processor =  new HelloWorldProcessor(client);
-    processor.run();
+    try {
+        processor.run();
+    }
+    catch(Exception e) {
+        stderr.writeln(e);
+    }
 }
 
 void server() {
@@ -62,10 +67,6 @@ void server() {
 }
 
 void main() {
-    version(Windows) {
-        import core.memory;
-        GC.disable(); // temporary for Win64 UMS threading
-    }
     startloop();
     go(() => server());
     runFibers();

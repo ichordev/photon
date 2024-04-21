@@ -1,6 +1,6 @@
 /+ dub.sdl:
 	name "hello-vibed"
-    dependency "vibe-d" version="~>0.8.3"
+    dependency "vibe-d" version="~>0.10.0"
     versions "VibeDefaultMain"
 +/
 import vibe.d;
