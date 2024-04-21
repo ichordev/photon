@@ -2,23 +2,18 @@
 
 ## Intro
 
-Photon is a minimalistic multi-threaded fiber scheduler and event loop that works transparently with traditional blocking I/O C/C++/D/Rust libraries w/o degrading performance. For example one can run multituide of downloads with `std.net.curl` with fibers, no blocking - it is as fast as threads but using less resources.
+Photon is a minimalistic multi-threaded fiber scheduler and event loop that works transparently with traditional blocking I/O C/C++/D/Rust libraries w/o degrading performance. For example one can run multituide of downloads with `std.net.curl` with fibers, no blocking - it is as fast as threads but using less resources. Think of it as Golang style concurrency that is brought to D transparently.
 
 Just like its particle cousing, Photon’s nature is dual, seeking to unify 2 different concepts (such as async and blocking I/O) in many ways:
-Fibers and Threads can be mixed and matched in coherent way (named as light thread and heavy thread respectively)
-LibC syscall wrapper is overriden to be aware of D fiber scheduling and transparently uses the same eventloop if called on fiber and is passed through otherwise
-Explicit async model with tasks/futures is integrated with pseudoblocking fiber scheduling
-D Ranges with asynchronous event streams are natural extension
+Fibers and Threads can be mixed and matched in coherent way. 
+LibC syscall wrapper is overriden to be aware of D fiber scheduling and transparently uses the same eventloop if called on fiber and is passed through otherwise.
+
+Explicit async model with tasks/futures could be integrated with pseudoblocking fiber scheduling,
+D Ranges with asynchronous event streams are a natural extension looking forward.
 
 ## Building
 
-Photon is a polyglot project and uses [Meson](https://mesonbuild.com/) to build.
-Just do the usual:
-```
-meson build # only once to generate ninja build
-cd build
-ninja
-```
+Photon switched to using Dub for D targets. The usual dub build should work. See more about [DUB](https://dub.pm/getting-started/first-steps/#building-a-third-party-project)
 
 ## Blocking, async and pseudo-blocking
 
