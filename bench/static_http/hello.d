@@ -8,16 +8,8 @@
         }
     }
 +/
-import std.algorithm;
-import std.conv;
-import std.datetime;
-import std.format;
-import std.range;
 import std.stdio;
-import std.string;
 import std.socket;
-import std.uni;
-import core.thread;
 
 import photon, photon.http;
 

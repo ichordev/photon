@@ -1,21 +1,14 @@
 #!/usr/bin/env dub
 /+ dub.json:
     {
-	    "name" : "hello",
+	    "name" : "hello-threaded",
         "dependencies": {
             "photon-http": "~>0.4.5"
         }
     }
 +/
-import std.algorithm;
-import std.conv;
-import std.datetime;
-import std.format;
-import std.range;
 import std.stdio;
-import std.string;
 import std.socket;
-import std.uni;
 import core.thread;
 
 import photon.http;
