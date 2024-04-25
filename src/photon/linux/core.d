@@ -17,6 +17,7 @@ import core.sys.posix.netinet.in_;
 import core.sys.posix.unistd;
 import core.sys.linux.epoll;
 import core.sys.linux.timerfd;
+import core.sys.linux.sys.eventfd;
 import core.sync.mutex;
 import core.stdc.errno;
 import core.atomic;
@@ -72,6 +73,70 @@ nothrow:
     }
     
     int fd;
+}
+
+public struct EventFd {
+nothrow:
+    private int evfd;
+
+    this(bool signaled) {
+        evfd = eventfd(signaled ? 1 : 0, EFD_NONBLOCK);
+        interceptFd!(Fcntl.noop)(evfd);
+    }
+
+    void waitAndReset() {
+        byte[8] bytes = void;
+        ssize_t resp = raw_read(evfd, bytes.ptr, bytes.sizeof);
+        if (resp < 0) {
+            
+        }
+    }
+
+    void trigger() { 
+        union U {
+            ulong cnt;
+            ubyte[8] bytes;
+        }
+        U value;
+        value.cnt = 1;
+        ssize_t r;
+        do {
+            r = raw_write(evfd, value.bytes.ptr, value.sizeof);
+        } while(r < 0 && errno == EINTR);
+    } 
+}
+
+///
+public struct Semaphore {
+    private int evfd;
+    ///
+    this(int count) {
+        evfd = eventfd(count, EFD_NONBLOCK | EFD_SEMAPHORE);
+        interceptFd!(Fcntl.noop)(evfd);
+    }
+
+    ///
+    void wait() {
+        ubyte[8] bytes = void;
+        // go through event loop
+        read(evfd, bytes.ptr, bytes.sizeof);
+    }
+
+    ///
+    void trigger(int count) {
+        union U {
+            ulong cnt;
+            ubyte[8] bytes;
+        }
+        U value;
+        value.cnt = count;
+        write(evfd, value.bytes.ptr, value.sizeof);
+    }
+
+    /// Free this semaphore
+    void release() {
+        close(evfd);
+    }
 }
 
 struct Timer {

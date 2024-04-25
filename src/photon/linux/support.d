@@ -12,7 +12,6 @@ import photon.linux.syscalls;
 enum int MSG_DONTWAIT = 0x40;
 enum int SOCK_NONBLOCK = 0x800;
 
-extern(C) int eventfd(uint initial, int flags) nothrow;
 extern(C) void perror(const(char) *s) nothrow;
 
 T checked(T: ssize_t)(T value, const char* msg="unknown place") nothrow {
