@@ -113,6 +113,7 @@ public struct Semaphore {
     this(int count) {
         evfd = eventfd(count, EFD_NONBLOCK | EFD_SEMAPHORE);
         interceptFd!(Fcntl.noop)(evfd);
+        writefln("Sem fd = %d", evfd);
     }
 
     ///
@@ -239,8 +240,9 @@ struct AwaitingFiber {
         while(head) {
             logf("Waking with FD=%d", wakeFd);
             head.wakeFd = wakeFd;
+            auto next = head.next; // schedule uses .next pointer
             head.schedule();
-            head = head.next;
+            head = next;
         }
     }
 }
