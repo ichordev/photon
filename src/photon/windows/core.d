@@ -101,7 +101,12 @@ public void startloop() {
     wenforce(CreateThread(null, 0, &eventLoop, null, 0, null) != null, "Failed to start event loop");
 }
 
+/// Convenience overload for functions
+public void go(void function() func) {
+    go({ func(); });
+}
 
+/// Setup a fiber task to run on the Photon scheduler.
 public void go(void delegate() func) {
     import std.random;
     uint choice;
