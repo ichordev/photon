@@ -15,6 +15,32 @@ D Ranges with asynchronous event streams are a natural extension looking forward
 
 Photon switched to using Dub for D targets. The usual dub build should work. See more about [DUB](https://dub.pm/getting-started/first-steps/#building-a-third-party-project)
 
+## Usage
+
+Typically the photon-powered program looks like this:
+
+```d
+#!/usr/bin/env dub
+/+ dub.json:
+    {
+	    "name" : "photon-example",
+        "dependencies": {
+		         "photon": "0.7.2"
+        }
+    }
++/
+import photon;
+
+void main() {
+ startloop(); // start the event loop thread and initializes Photon's data structures
+ go({
+   // the root fiber task goes here, typically this is accepting or connecting sockets,
+   // spawning new fibers each to handle new connections.
+ });
+ runFibers(); // run all fibers on the scheduler, until all are completed
+}
+```
+
 ## Blocking, async and pseudo-blocking
 
 In short, there are roughly 3 ways (glossing over OS specific abilities) to tackle I/O.
