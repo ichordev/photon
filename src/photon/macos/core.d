@@ -77,82 +77,143 @@ nothrow:
         r.checked("event trigger");
     }
     
-    int[2] fds;
+    private int[2] fds;
 }
-/*
+
+shared size_t timerId;
+
 struct Timer {
 nothrow:
-    private timer_t timer;
-
-    static void ms2ts(timespec *ts, ulong ms)
-    {
-        ts.tv_sec = ms / 1000;
-        ts.tv_nsec = (ms % 1000) * 1000000;
+    this(size_t id) {
+        this.id = id;
     }
 
-    void arm(int timeout) {
-        timespec ts_timeout;
-        ms2ts(&ts_timeout, timeout); //convert miliseconds to timespec
-        itimerspec its;
-        its.it_value = ts_timeout;
-        its.it_interval.tv_sec = 0;
-        its.it_interval.tv_nsec = 0;
-        timer_settime(timer, 0, &its, null);
+    void arm(Duration dur) {
+        KEvent event;
+        event.ident = id;
+        event.filter = EVFILT_TIMER;
+        event.flags = EV_ADD | EV_ENABLE | EV_ONESHOT;
+        event.fflags = 0;
+        event.data = dur.total!"msecs";
+        event.udata = cast(void*)currentFiber;
+        timespec timeout;
+        timeout.tv_nsec = 1000;
+        kevent(kq, &event, 1, null, 0, &timeout).checked;
     }
 
     void disarm() {
-        itimerspec its; // zeros
-        timer_settime(timer, 0, &its, null);
+        KEvent event;
+        event.ident = id;
+        event.filter = EVFILT_TIMER;
+        event.flags = EV_DELETE;
+        event.fflags = 0;
+        event.data = 0;
+        timespec timeout;
+        timeout.tv_nsec = 1000;
+        kevent(kq, &event, 1, null, 0, &timeout).checked;
     }
 
-    void dispose() { 
-        timer_delete(timer).checked;
+    void wait() {
+        FiberExt.yield();
     }
+
+    private size_t id;
 }
 
-Timer timer() {
-    int timerfd = timer_create(CLOCK_MONOTONIC, null, null).checked;
-    interceptFd!(Fcntl.noop)(timerfd);
-    return Timer(timerfd);
+/// Allocate a timer
+public nothrow auto timer() {
+    return Timer(atomicFetchAdd(timerId, 1));
 }
-*/
-enum EventState { ready, fibers };
 
-shared struct Event {
-    SpinLock lock = SpinLock(SpinLock.Contention.brief);
-    EventState state = EventState.ready;
-    FiberExt awaiting;
 
-    void reset() {
-        lock.lock();
-        auto f = awaiting.unshared;
-        awaiting = null;
-        state = EventState.ready;
-        lock.unlock();
-        while(f !is null) {
-            auto next = f.next;
-            f.schedule();
-            f = next;
+public shared struct Event {
+nothrow:
+    @disable this(this);
+
+    this(bool signaled) {
+        int[2] fds;
+        pipe(fds).checked;
+        if (signaled) trigger();
+        this.fds = fds;
+    }
+
+    /// Wait for the event to be triggered, then reset and return atomically
+    void waitAndReset() shared {
+        byte[4096] bytes = void;
+        ssize_t r;
+        do {
+            r = read(fds[0], bytes.ptr, bytes.sizeof);
+        } while(r < 0 && errno == EINTR);
+    }
+    
+    /// Trigger the event.
+    void trigger() shared { 
+        ubyte[1] bytes = void;
+        ssize_t r;
+        do {
+            r = write(fds[1], bytes.ptr, 1);
+        } while(r < 0 && errno == EINTR);
+    }
+
+    ///
+    void dispose() shared {
+        close(fds[0]);
+        close(fds[1]);
+    }
+
+    private int[2] fds;
+}
+
+///
+public nothrow auto event(bool signaled) {
+    return Event(signaled);
+}
+
+
+public shared struct Semaphore {
+nothrow:
+    @disable this(this);
+
+    this(int initial) {
+        int[2] fds;
+        pipe(fds).checked;
+        if (initial > 0) {
+            trigger(initial);
         }
+        this.fds = fds;
     }
 
-    bool ready(){
-        lock.lock();
-        scope(exit) lock.unlock();
-        return state == EventState.ready;
+    /// 
+    void wait() shared {
+        byte[1] bytes = void;
+        ssize_t r;
+        do {
+            r = read(fds[0], bytes.ptr, bytes.sizeof);
+        } while(r < 0 && errno == EINTR);
+    }
+    
+    /// 
+    void trigger(int count) shared { 
+        ubyte[4096] bytes = void;
+        ssize_t size = count > 4096 ? 4096 : count;
+        ssize_t r;
+        do {
+            r = write(fds[1], bytes.ptr, size);
+        } while(r < 0 && errno == EINTR);
     }
 
-    void await(){
-        lock.lock();
-        scope(exit) lock.unlock();
-        if (state == EventState.ready) return;
-        if (currentFiber !is null) {
-            currentFiber.next = awaiting.unshared;
-            awaiting = cast(shared)currentFiber;
-            state = EventState.fibers;
-        }
-        else abort(); //TODO: threads
+    ///
+    void dispose() {
+        close(fds[0]);
+        close(fds[1]);
     }
+
+    private int[2] fds;
+}
+
+///
+public nothrow auto semaphore(int initial) {
+    return Semaphore(initial);
 }
 
 struct AwaitingFiber {
@@ -175,8 +236,9 @@ struct AwaitingFiber {
         while(head) {
             logf("Waking with FD=%d", wakeFd);
             head.wakeFd = wakeFd;
+            auto next = head.next;
             head.schedule();
-            head = head.next;
+            head = next;
         }
     }
 }
@@ -492,6 +554,10 @@ extern(C) void* processEventsEntry(void*)
                 }
                 logf("Awaits %x", cast(void*)descriptor.writeWaiters);
             }
+            if (filter == EVFILT_TIMER) {
+                FiberExt fiber = *cast(FiberExt*)&ke[i].udata;
+                fiber.schedule();
+            }
             descriptors[ke[i].ident].scheduleWriters(cast(int)ke[i].ident);   
         }
     }
@@ -660,7 +726,7 @@ ssize_t universalSyscall(size_t ident, string name, SyscallKind kind, Fcntl fcnt
 // ======================================================================================
 // SYSCALL warappers intercepts
 // ======================================================================================
-
+nothrow:
 extern(C) ssize_t read(int fd, void *buf, size_t count) nothrow
 {
     return universalSyscall!(SYS_READ, "read", SyscallKind.read, Fcntl.explicit, EWOULDBLOCK)
