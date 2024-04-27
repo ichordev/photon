@@ -9,6 +9,8 @@ import core.sys.linux.timerfd;
 
 import photon.linux.support;
 
+nothrow:
+
 version (X86) {
     enum int SYS_READ = 0x3, SYS_SOCKETPAIR = 0x168; //TODO test on x86
     int syscall(int ident, int n, int arg1, int arg2)

@@ -75,23 +75,28 @@ nothrow:
     int fd;
 }
 
-public struct EventFd {
+///
+public struct Event {
 nothrow:
     private int evfd;
 
-    this(bool signaled) {
+    private this(bool signaled) {
         evfd = eventfd(signaled ? 1 : 0, EFD_NONBLOCK);
         interceptFd!(Fcntl.noop)(evfd);
     }
 
+    @disable this(this);
+
+    /// Wait for the event to be triggered, then reset and return atomically
     void waitAndReset() {
         byte[8] bytes = void;
-        ssize_t resp = raw_read(evfd, bytes.ptr, bytes.sizeof);
-        if (resp < 0) {
-            
-        }
+        ssize_t r;
+        do {
+            r = read(evfd, bytes.ptr, bytes.sizeof);
+        } while (r < 0 && errno == EINTR);
     }
 
+    /// Trigger the event.
     void trigger() { 
         union U {
             ulong cnt;
@@ -101,26 +106,36 @@ nothrow:
         value.cnt = 1;
         ssize_t r;
         do {
-            r = raw_write(evfd, value.bytes.ptr, value.sizeof);
+            r = write(evfd, value.bytes.ptr, value.sizeof);
         } while(r < 0 && errno == EINTR);
     } 
 }
 
 ///
+public auto event(bool triggered) {
+    return Event(triggered);
+}
+
+///
 public struct Semaphore {
+nothrow:
     private int evfd;
     ///
     this(int count) {
         evfd = eventfd(count, EFD_NONBLOCK | EFD_SEMAPHORE);
         interceptFd!(Fcntl.noop)(evfd);
-        writefln("Sem fd = %d", evfd);
     }
+
+    @disable this(this);
 
     ///
     void wait() {
         ubyte[8] bytes = void;
-        // go through event loop
-        read(evfd, bytes.ptr, bytes.sizeof);
+        ssize_t r;
+        do {
+            // go through event loop
+            r = read(evfd, bytes.ptr, bytes.sizeof);
+        } while (r < 0 && errno == EINTR);
     }
 
     ///
@@ -131,16 +146,25 @@ public struct Semaphore {
         }
         U value;
         value.cnt = count;
-        write(evfd, value.bytes.ptr, value.sizeof);
+        ssize_t r;
+        do {
+            r = write(evfd, value.bytes.ptr, value.sizeof);
+        } while(r < 0 && errno == EINTR);
     }
 
     /// Free this semaphore
-    void release() {
-        close(evfd);
+    void dispose() {
+        close(evfd).checked;
     }
 }
 
-struct Timer {
+///
+auto nothrow semaphore(int initialCount) {
+    return Semaphore(initialCount);
+}
+
+/// A fiber-friendly timer.
+public struct Timer {
 nothrow:
     private int timerfd;
 
@@ -149,15 +173,17 @@ nothrow:
         return timerfd;
     }
 
-    static void ms2ts(timespec *ts, ulong ms)
+    static void duration2ts(timespec *ts, Duration d)
     {
-        ts.tv_sec = ms / 1000;
-        ts.tv_nsec = (ms % 1000) * 1000000;
+        auto total = d.total!"nsecs"();
+        ts.tv_sec = total / 1_000_000_000;
+        ts.tv_nsec = total % 1_000_000_000;
     }
 
-    void arm(int timeout) {
+    /// Set timeout.
+    void arm(Duration timeout) {
         timespec ts_timeout;
-        ms2ts(&ts_timeout, timeout); //convert miliseconds to timespec
+        duration2ts(&ts_timeout, timeout); //convert duration to timespec
         itimerspec its;
         its.it_value = ts_timeout;
         its.it_interval.tv_sec = 0;
@@ -165,9 +191,23 @@ nothrow:
         timerfd_settime(timerfd, 0, &its, null);
     }
 
+    /// Unset the timer.
     void disarm() {
         itimerspec its; // zeros
         timerfd_settime(timerfd, 0, &its, null);
+    }
+
+    /// Wait for the timer to trigger.
+    void wait() {
+        union U {
+            ulong timeouts;
+            ubyte[8] bytes;
+        }
+        U u = void;
+        ssize_t r;
+        do {
+            r = read(timerfd, u.bytes.ptr, U.sizeof);
+        } while (r < 0 && errno == EINTR);
     }
 
     void dispose() { 
@@ -175,49 +215,11 @@ nothrow:
     }
 }
 
-Timer timer() {
+///
+public nothrow Timer timer() {
     int timerfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC).checked;
     interceptFd!(Fcntl.noop)(timerfd);
     return Timer(timerfd);
-}
-
-enum EventState { ready, fibers };
-
-shared struct Event {
-    SpinLock lock = SpinLock(SpinLock.Contention.brief);
-    EventState state = EventState.ready;
-    FiberExt awaiting;
-
-    void reset() {
-        lock.lock();
-        auto f = awaiting.unshared;
-        awaiting = null;
-        state = EventState.ready;
-        lock.unlock();
-        while(f !is null) {
-            auto next = f.next;
-            f.schedule();
-            f = next;
-        }
-    }
-
-    bool ready(){
-        lock.lock();
-        scope(exit) lock.unlock();
-        return state == EventState.ready;
-    }
-
-    void await(){
-        lock.lock();
-        scope(exit) lock.unlock();
-        if (state == EventState.ready) return;
-        if (currentFiber !is null) {
-            currentFiber.next = awaiting.unshared;
-            awaiting = cast(shared)currentFiber;
-            state = EventState.fibers;
-        }
-        else abort(); //TODO: threads
-    }
 }
 
 struct AwaitingFiber {
@@ -799,6 +801,7 @@ Channel!T channel(T)(size_t size) {
 // ======================================================================================
 // SYSCALL warappers intercepts
 // ======================================================================================
+nothrow:
 
 extern(C) ssize_t read(int fd, void *buf, size_t count) nothrow
 {
@@ -855,7 +858,7 @@ extern(C) private ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags,
 
 extern(C) private ssize_t poll(pollfd *fds, nfds_t nfds, int timeout)
 {
-    bool nonBlockingCheck(ref ssize_t result) {
+    nothrow bool nonBlockingCheck(ref ssize_t result) {
         bool uncertain;
     L_cacheloop:
         foreach (ref fd; fds[0..nfds]) {
@@ -929,7 +932,7 @@ extern(C) private ssize_t poll(pollfd *fds, nfds_t nfds, int timeout)
             Timer tm = timer();
             descriptors[tm.fd].enqueueReader(&aw);
             scope(exit) tm.dispose();
-            tm.arm(timeout);
+            tm.arm(timeout.msecs);
             logf("Timer fd=%d", tm.fd);
             Fiber.yield();
             logf("Woke up after select %x. WakeFd=%d", cast(void*)currentFiber, currentFiber.wakeFd);
@@ -951,7 +954,7 @@ extern(C) private ssize_t poll(pollfd *fds, nfds_t nfds, int timeout)
         }
         Timer tm = timer();
         scope(exit) tm.dispose();
-        tm.arm(timeout);
+        tm.arm(timeout.msecs);
         descriptors[tm.fd].enqueueReader(&aw);
         Fiber.yield();
         tm.disarm();

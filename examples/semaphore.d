@@ -12,6 +12,7 @@ module examples.semaphore;
 import std.stdio;
 import photon;
 import core.thread;
+import core.time;
 
 void main() {
     startloop();
@@ -27,14 +28,18 @@ void main() {
         waitingTask(i);
     }
     go({
+        auto tm = timer();
         writeln("Main fiber started!");
-        Thread.sleep(dur!"msecs"(1000));
+        tm.arm(1000.msecs);
+        tm.wait();
         writeln("Releasing two fibers!");
         sem.trigger(2);
-        Thread.sleep(dur!"msecs"(1000));
+        tm.arm(1000.msecs);
+        tm.wait();
         writeln("Releasing one fiber!");
         sem.trigger(1);
         writeln("Main fiber exited!");
     });
     runFibers();
+    sem.dispose();
 }
