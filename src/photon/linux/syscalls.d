@@ -75,7 +75,8 @@ version (X86) {
         SYS_ACCEPT4 = 0x120,
         SYS_CONNECT = 0x2a,
         SYS_SENDTO = 0x2c,
-        SYS_RECVFROM = 45;
+        SYS_RECVFROM = 45,
+        SYS_NANOSLEEP = 35;
 
     size_t syscall(size_t ident) nothrow
     {
@@ -98,6 +99,21 @@ version (X86) {
         {
             mov RAX, ident;
             mov RDI, n;
+            syscall;
+            mov ret, RAX;
+        }
+        return ret;
+    }
+
+    size_t syscall(size_t ident, size_t n, size_t arg1) nothrow
+    {
+        size_t ret;
+
+        asm nothrow
+        {
+            mov RAX, ident;
+            mov RDI, n;
+            mov RSI, arg1;
             syscall;
             mov ret, RAX;
         }

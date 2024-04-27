@@ -173,22 +173,25 @@ nothrow:
         return timerfd;
     }
 
-    static void duration2ts(timespec *ts, Duration d)
-    {
+    static void duration2ts(timespec *ts, Duration d) {
         auto total = d.total!"nsecs"();
         ts.tv_sec = total / 1_000_000_000;
         ts.tv_nsec = total % 1_000_000_000;
+    }
+
+    void arm(const timespec *ts_timeout) {
+        itimerspec its;
+        its.it_value = *ts_timeout;
+        its.it_interval.tv_sec = 0;
+        its.it_interval.tv_nsec = 0;
+        timerfd_settime(timerfd, 0, &its, null);
     }
 
     /// Set timeout.
     void arm(Duration timeout) {
         timespec ts_timeout;
         duration2ts(&ts_timeout, timeout); //convert duration to timespec
-        itimerspec its;
-        its.it_value = ts_timeout;
-        its.it_interval.tv_sec = 0;
-        its.it_interval.tv_nsec = 0;
-        timerfd_settime(timerfd, 0, &its, null);
+        arm(&ts_timeout);
     }
 
     /// Unset the timer.
@@ -276,6 +279,34 @@ FiberExt currentFiber;
 shared RawEvent termination; // termination event, triggered once last fiber exits
 shared pthread_t eventLoop; // event loop, runs outside of D runtime
 shared int alive; // count of non-terminated Fibers scheduled
+
+Timer[] timerPool; // thread-local pool of preallocated timers
+
+nothrow auto getSleepTimer() {
+    Timer tm;
+    if (timerPool.length == 0) {
+        tm = timer();
+    } else {
+        tm = timerPool[$-1];
+        timerPool.length = timerPool.length-1;
+    }
+    return tm;
+}
+
+nothrow void freeSleepTimer(Timer tm) {
+    timerPool.assumeSafeAppend();
+    timerPool ~= tm;
+}
+
+/// Delay fiber execution by `req` duration.
+public nothrow void delay(T)(T req)
+if (is(T : const timespec*) || is(T : Duration)) {
+    auto tm = getSleepTimer();
+    tm.arm(req);
+    tm.wait();
+    tm.disarm();
+    freeSleepTimer(tm);
+}
 
 struct SchedulerBlock {
     shared IntrusiveQueue!(FiberExt, RawEvent) queue;
@@ -977,6 +1008,15 @@ extern(C) private ssize_t poll(pollfd *fds, nfds_t nfds, int timeout)
             nonBlockingCheck(result);
             return result;
         }
+    }
+}
+
+extern(C) private ssize_t nanosleep(const timespec* req, const timespec* rem) {
+    if (currentFiber !is null) {
+        delay(req);
+        return 0;
+    } else {
+        return syscall(SYS_NANOSLEEP, cast(size_t)req, cast(size_t)rem).withErrorno;
     }
 }
 
