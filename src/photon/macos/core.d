@@ -260,6 +260,12 @@ package(photon) void schedulerEntry(size_t n)
     }
 }
 
+/// Convenience overload for functions
+public void go(void function() func) {
+    go({ func(); });
+}
+
+/// Setup a fiber task to run on the Photon scheduler.
 public void go(void delegate() func) {
     import std.random;
     uint choice;

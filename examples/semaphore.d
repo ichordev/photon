@@ -16,7 +16,7 @@ import core.time;
 
 void main() {
     startloop();
-    Semaphore sem = Semaphore(0);
+    shared Semaphore sem = semaphore(0);
     void waitingTask(int n) {
         go({
             writefln("Fiber  #%d started!", n);

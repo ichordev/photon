@@ -88,7 +88,7 @@ nothrow:
     @disable this(this);
 
     /// Wait for the event to be triggered, then reset and return atomically
-    void waitAndReset() {
+    void waitAndReset() shared {
         byte[8] bytes = void;
         ssize_t r;
         do {
@@ -97,7 +97,7 @@ nothrow:
     }
 
     /// Trigger the event.
-    void trigger() { 
+    void trigger() shared { 
         union U {
             ulong cnt;
             ubyte[8] bytes;
@@ -129,7 +129,7 @@ nothrow:
     @disable this(this);
 
     ///
-    void wait() {
+    void wait() shared {
         ubyte[8] bytes = void;
         ssize_t r;
         do {
@@ -139,7 +139,7 @@ nothrow:
     }
 
     ///
-    void trigger(int count) {
+    void trigger(int count) shared {
         union U {
             ulong cnt;
             ubyte[8] bytes;
@@ -153,13 +153,13 @@ nothrow:
     }
 
     /// Free this semaphore
-    void dispose() {
+    void dispose() shared {
         close(evfd).checked;
     }
 }
 
 ///
-auto nothrow semaphore(int initialCount) {
+public auto nothrow semaphore(int initialCount) {
     return Semaphore(initialCount);
 }
 
@@ -326,6 +326,12 @@ package(photon) void schedulerEntry(size_t n)
     }
 }
 
+/// Convenience overload for functions
+public void go(void function() func) {
+    go({ func(); });
+}
+
+/// Setup a fiber task to run on the Photon scheduler.
 public void go(void delegate() func) {
     import std.random;
     uint choice;

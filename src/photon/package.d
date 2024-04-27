@@ -7,6 +7,7 @@ else version(freeBSD) public import photon.freebsd.core;
 else version(OSX) public import photon.macos.core;
 else static assert(false, "Target OS not supported by Photon yet!");
 
+/// Start sheduler and run fibers until all are terminated.
 void runFibers()
 {
     Thread runThread(size_t n){ // damned D lexical capture "semantics"
