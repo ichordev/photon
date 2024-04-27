@@ -21,19 +21,23 @@ import core.thread;
 import photon;
 
 
-void task(Duration duration) {
+void task(string msg, Duration duration) {
     Thread.sleep(duration);
-    writeln("Sleep is over");
+    writeln(msg);
 }
 
 void main() {
     startloop();
-    writeln("Starting a bunch of fibers, each waiting 1 second");
-    foreach (v; 0..1000)
-    {
+    writeln("Starting a bunch of fibers and threads, each waiting 1 second");
+    foreach (_; 0..1000) {
         go({
-            task(1.seconds);
+            task("fiber sleep is over", 1.seconds);
         });
+    }
+    foreach (_; 0..100) {
+        new Thread({
+            task("thread sleep is over", 1.seconds);
+        }).start();
     }
     runFibers();
 }

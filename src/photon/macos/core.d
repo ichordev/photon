@@ -25,12 +25,14 @@ import core.sys.posix.fcntl;
 import core.memory;
 import core.sys.posix.sys.mman;
 import core.sys.posix.pthread;
+import core.sys.darwin.sys.event;
+import core.sys.darwin.mach.thread_act;
 
 import photon.macos.support;
 import photon.ds.common;
 import photon.ds.intrusive_queue;
 
-
+alias KEvent = kevent_t;
 enum SYS_READ = 3;
 enum SYS_WRITE = 4;
 enum SYS_ACCEPT = 30;
@@ -41,6 +43,10 @@ enum SYS_CLOSE = 6;
 enum SYS_GETTID = 286;
 enum SYS_POLL = 230;
 
+struct thread;
+alias thread_t = thread*;
+extern(C) thread_t current_thread();
+
 // T becomes thread-local b/c it's stolen from shared resource
 auto steal(T)(ref shared T arg)
 {
@@ -49,7 +55,6 @@ auto steal(T)(ref shared T arg)
         if(cas(&arg, v, cast(shared(T))null)) return v;
     }
 }
-
 
 shared struct RawEvent {
 nothrow:
@@ -88,6 +93,12 @@ nothrow:
         this.id = id;
     }
 
+    ///
+    void arm(const timespec* ts) {
+        arm(ts.tv_sec.seconds + ts.tv_nsec.nsecs);
+    }
+
+    ///
     void arm(Duration dur) {
         KEvent event;
         event.ident = id;
@@ -95,12 +106,27 @@ nothrow:
         event.flags = EV_ADD | EV_ENABLE | EV_ONESHOT;
         event.fflags = 0;
         event.data = dur.total!"msecs";
-        event.udata = cast(void*)currentFiber;
+        event.udata = cast(void*)(cast(size_t)cast(void*)currentFiber | 0x1);
         timespec timeout;
         timeout.tv_nsec = 1000;
-        kevent(kq, &event, 1, null, 0, &timeout).checked;
+        kevent(kq, &event, 1, null, 0, &timeout).checked("arming the timer");
     }
 
+    private void armThread(const timespec* ts) {
+        auto dur = ts.tv_sec.seconds + ts.tv_nsec.nsecs;
+        KEvent event;
+        event.ident = id;
+        event.filter = EVFILT_TIMER;
+        event.flags = EV_ADD | EV_ENABLE | EV_ONESHOT;
+        event.fflags = 0;
+        event.data = dur.total!"msecs";
+        event.udata = cast(void*)(cast(size_t)mach_thread_self() << 1);
+        timespec timeout;
+        timeout.tv_nsec = 1000;
+        kevent(kq, &event, 1, null, 0, &timeout).checked("arming the timer for a thread");
+    }
+
+    ///
     void disarm() {
         KEvent event;
         event.ident = id;
@@ -110,9 +136,10 @@ nothrow:
         event.data = 0;
         timespec timeout;
         timeout.tv_nsec = 1000;
-        kevent(kq, &event, 1, null, 0, &timeout).checked;
+        kevent(kq, &event, 1, null, 0, &timeout);
     }
 
+    ///
     void wait() {
         FiberExt.yield();
     }
@@ -472,6 +499,34 @@ void printStats()
 
 shared int kq;
 shared int eventLoopId;
+__gshared ssize_t function (const timespec* req, const timespec* rem) libcNanosleep;
+Timer[] timerPool; // thread-local pool of preallocated timers
+
+nothrow auto getSleepTimer() {
+    Timer tm;
+    if (timerPool.length == 0) {
+        tm = timer();
+    } else {
+        tm = timerPool[$-1];
+        timerPool.length = timerPool.length-1;
+    }
+    return tm;
+}
+
+nothrow void freeSleepTimer(Timer tm) {
+    timerPool.assumeSafeAppend();
+    timerPool ~= tm;
+}
+
+/// Delay fiber execution by `req` duration.
+public nothrow void delay(T)(T req)
+if (is(T : const timespec*) || is(T : Duration)) {
+    auto tm = getSleepTimer();
+    tm.arm(req);
+    tm.wait();
+    tm.disarm();
+    freeSleepTimer(tm);
+}
 
 public void startloop()
 {
@@ -555,8 +610,16 @@ extern(C) void* processEventsEntry(void*)
                 logf("Awaits %x", cast(void*)descriptor.writeWaiters);
             }
             if (filter == EVFILT_TIMER) {
-                FiberExt fiber = *cast(FiberExt*)&ke[i].udata;
-                fiber.schedule();
+                size_t udata = cast(size_t)ke[i].udata;
+                if (udata & 0x1) {
+                    auto ptr = udata & ~1;
+                    FiberExt fiber = *cast(FiberExt*)&ptr;
+                    fiber.schedule();
+                }
+                else {
+                    auto thread = cast(thread_act_t)udata >> 1;
+                    thread_resume(thread);
+                }
             }
             descriptors[ke[i].ident].scheduleWriters(cast(int)ke[i].ident);   
         }
@@ -880,6 +943,18 @@ extern(C) private ssize_t poll(pollfd *fds, nfds_t nfds, int timeout)
         }
         nonBlockingCheck(result);
         return result;
+    }
+}
+
+extern(C) private ssize_t nanosleep(const timespec* req, const timespec* rem) {
+    if (currentFiber !is null) {
+        delay(req);
+        return 0;
+    } else {
+        auto timer = getSleepTimer();
+        timer.armThread(req);
+        thread_suspend(mach_thread_self());
+        return 0;
     }
 }
 

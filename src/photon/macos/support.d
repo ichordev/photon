@@ -6,43 +6,12 @@ import core.stdc.stdlib;
 import core.thread;
 import core.stdc.config;
 import core.sys.posix.pthread;
+import core.sys.darwin.sys.event;
 
 enum int MSG_DONTWAIT = 0x80;
-
-enum int EV_ADD     = 0x0001;	/* add event to kq (implies enable) */
-enum int EV_DELETE  = 0x0002;	/* delete event from kq */
-enum int EV_ENABLE  = 0x0004;	/* enable event */
-enum int EV_DISABLE = 0x0008;	/* disable event (not reported) */
-
-/* flags */
-enum int EV_ONESHOT	= 0x0010;	/* only report one occurrence */
-enum int EV_CLEAR	= 0x0020;	/* clear event state after reporting */
-enum int EVFILT_READ     =  (-1);
-enum int EVFILT_WRITE    =  (-2);
-enum int EVFILT_AIO		 =  (-3);	/* attached to aio requests */
-enum int EVFILT_VNODE	 =	(-4);	/* attached to vnodes */
-enum int EVFILT_PROC	 =	(-5);	    /* attached to struct proc */
-enum int EVFILT_SIGNAL	 =	(-6);	/* attached to struct proc */
-enum int EVFILT_TIMER	 =	(-7);	/* timers */
-enum int EVFILT_MACHPORT =	(-8);	/* Mach ports */
-enum int EVFILT_FS		 =  (-9);	    /* Filesystem events */
-
-alias quad_t = ulong;
 alias off_t = long;
+alias quad_t = ulong;
 extern(C) nothrow off_t __syscall(quad_t number, ...);
-extern(C) nothrow int kevent(int kq, const KEvent* changelist, int nchanges, const KEvent* eventlist, int nevent, timespec* tm);
-
-struct KEvent {
-    size_t    ident;	     /*	identifier for this event */
-    short     filter;	     /*	filter for event */
-    ushort    flags;	     /*	action flags for kqueue	*/
-    uint      fflags;	     /*	filter flag value */
-    long      data;	     /*	filter data value */
-    void*     udata;	     /*	opaque user data identifier */
-    ulong[4]  ext;	     /*	extensions */
-}
-
-extern(C) int kqueue();
 extern(C) void perror(const(char) *s) nothrow;
 
 T checked(T: ssize_t)(T value, const char* msg="unknown place") nothrow {
