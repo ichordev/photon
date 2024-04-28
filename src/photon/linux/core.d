@@ -179,7 +179,7 @@ nothrow:
         ts.tv_nsec = total % 1_000_000_000;
     }
 
-    void arm(const timespec *ts_timeout) {
+    private void arm(const timespec *ts_timeout) {
         itimerspec its;
         its.it_value = *ts_timeout;
         its.it_interval.tv_sec = 0;
@@ -187,21 +187,21 @@ nothrow:
         timerfd_settime(timerfd, 0, &its, null);
     }
 
-    /// Set timeout.
-    void arm(Duration timeout) {
+    private void arm(Duration timeout) {
         timespec ts_timeout;
         duration2ts(&ts_timeout, timeout); //convert duration to timespec
         arm(&ts_timeout);
     }
 
-    /// Unset the timer.
-    void disarm() {
+    private void disarm() {
         itimerspec its; // zeros
         timerfd_settime(timerfd, 0, &its, null);
     }
 
     /// Wait for the timer to trigger.
-    void wait() {
+    void wait(T)(T duration)
+    if (is(T : const timespec*) || is(T : Duration)) {
+        arm(duration);
         union U {
             ulong timeouts;
             ubyte[8] bytes;
@@ -211,6 +211,7 @@ nothrow:
         do {
             r = read(timerfd, u.bytes.ptr, U.sizeof);
         } while (r < 0 && errno == EINTR);
+        disarm();
     }
 
     void dispose() { 

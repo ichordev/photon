@@ -37,6 +37,111 @@ nothrow:
     HANDLE ev;
 }
 
+extern(Windows) VOID waitCallback(PTP_CALLBACK_INSTANCE Instance, PVOID Context, PTP_WAIT  Wait, TP_WAIT_RESULT WaitResult) {
+    auto fiber = cast(FiberExt)Context;
+    fiber.schedule();
+}
+
+/// Event object
+public struct Event {
+shared:
+    @disable this(this);
+
+    this(bool signaled) {
+        ev = cast(shared(HANDLE))CreateEventA(null, FALSE, signaled, null);
+        assert(ev != null, "Failed to create RawEvent");
+    }
+
+    /// Wait for the event to be triggered, then reset and return atomically
+    void waitAndReset() {
+        auto wait = CreateThreadpoolWait(&waitCallback, cast(void*)currentFiber, &environ);
+        wenforce(wait != null, "Failed to create threadpool wait object");
+        SetThreadpoolWait(wait, cast(HANDLE)ev, null);
+        FiberExt.yield();
+        CloseThreadpoolWait(wait);
+
+    }
+    
+    /// Trigger the event.
+    void trigger() { 
+        auto ret = SetEvent(cast(HANDLE)ev);
+        assert(ret != 0);
+    }
+    
+private:
+    HANDLE ev;
+}
+
+///
+public auto event(bool signaled) {
+    return shared(Event)(signaled);
+}
+
+/// Semaphore object
+public struct Semaphore {
+shared:
+    @disable this(this);
+
+    this(int count) {
+        // set max count to MacOS pipe limit
+        sem = cast(shared(HANDLE))CreateSemaphoreA(null, count, 4096, null);
+        assert(sem != null, "Failed to create RawEvent");
+    }
+
+    /// 
+    void wait() {
+        auto wait = CreateThreadpoolWait(&waitCallback, cast(void*)currentFiber, &environ);
+        wenforce(wait != null, "Failed to create threadpool wait object");
+        SetThreadpoolWait(wait, cast(HANDLE)sem, null);
+        FiberExt.yield();
+        CloseThreadpoolWait(wait);
+    }
+    
+    /// 
+    void trigger(int count) { 
+        auto ret = ReleaseSemaphore(cast(HANDLE)sem, count, null);
+        assert(ret);
+    }
+
+    /// 
+    void dispose() {
+        CloseHandle(cast(HANDLE)sem);
+    }
+    
+private:
+    HANDLE sem;
+}
+
+///
+public auto semaphore(int count) {
+    return shared(Semaphore)(count);
+}
+
+extern(Windows) VOID timerCallback(PTP_CALLBACK_INSTANCE Instance, PVOID Context, PTP_TIMER Timer) {
+    FiberExt fiber = cast(FiberExt)Context;
+    fiber.schedule();
+}
+
+///
+struct Timer {
+    void wait(Duration dur) {
+        auto timer = CreateThreadpoolTimer(&timerCallback, cast(void*)currentFiber, &environ);
+        wenforce(timer != null, "Failed to create threadpool timer");
+        FILETIME time;
+        long hnsecs = -dur.total!"hnsecs";
+        time.dwHighDateTime = cast(DWORD)(hnsecs >> 32);
+        time.dwLowDateTime = hnsecs & 0xFFFF_FFFF;
+        SetThreadpoolTimer(timer, &time, 0, 0);
+        FiberExt.yield();
+        CloseThreadpoolTimer(timer);
+    }
+}
+
+///
+public auto timer() {
+    return Timer();
+}
+
 struct SchedulerBlock {
     shared IntrusiveQueue!(FiberExt, RawEvent) queue;
     shared uint assigned;
@@ -292,5 +397,15 @@ extern(Windows) int send(SOCKET s, void* buf, int len, int flags) {
         }
         else 
             return ret;
+    }
+}
+
+
+extern(Windows) void Sleep(DWORD dwMilliseconds) {
+    if (currentFiber !is null) {
+        auto tm = timer();
+        tm.wait(dwMilliseconds.msecs);
+    } else {
+        SleepEx(dwMilliseconds, FALSE);
     }
 }

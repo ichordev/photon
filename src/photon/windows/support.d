@@ -157,7 +157,17 @@ VOID SetThreadpoolCallbackPool(PTP_CALLBACK_ENVIRON cbe, PTP_POOL pool) { cbe.Po
 struct TP_WORK;
 alias PTP_WORK = TP_WORK*;
 
+struct TP_WAIT;
+alias PTP_WAIT = TP_WAIT*;
+
+struct TP_TIMER;
+alias PTP_TIMER = TP_TIMER*;
+
+alias TP_WAIT_RESULT = DWORD;
+
 alias PTP_WORK_CALLBACK = extern(Windows) VOID function (PTP_CALLBACK_INSTANCE Instance, PVOID Context, PTP_WORK Work);
+alias PTP_WAIT_CALLBACK = extern(Windows) VOID function (PTP_CALLBACK_INSTANCE Instance, PVOID Context, PTP_WAIT  Wait, TP_WAIT_RESULT WaitResult);
+alias PTP_TIMER_CALLBACK = extern(Windows) VOID function(PTP_CALLBACK_INSTANCE Instance, PVOID Context, PTP_TIMER Timer);
 
 extern(Windows) PTP_WORK CreateThreadpoolWork(
   PTP_WORK_CALLBACK    pfnwk,
@@ -165,12 +175,41 @@ extern(Windows) PTP_WORK CreateThreadpoolWork(
   PTP_CALLBACK_ENVIRON pcbe
 );
 
+extern(Windows) PTP_WAIT CreateThreadpoolWait(PTP_WAIT_CALLBACK pfnwa, PVOID pv, PTP_CALLBACK_ENVIRON pcbe);
+
 extern(Windows) void SubmitThreadpoolWork(
   PTP_WORK pwk
 );
 
 extern(Windows) void CloseThreadpoolWork(
   PTP_WORK pwk
+);
+
+extern(Windows) void SetThreadpoolWait(
+  PTP_WAIT  pwa,
+  HANDLE    h,
+  PFILETIME pftTimeout
+);
+
+extern(Windows) void CloseThreadpoolWait(
+  PTP_WAIT pwa
+);
+
+extern(Windows) PTP_TIMER CreateThreadpoolTimer(
+  PTP_TIMER_CALLBACK   pfnti,
+  PVOID                pv,
+  PTP_CALLBACK_ENVIRON pcbe
+);
+
+extern(Windows) void SetThreadpoolTimer(
+  PTP_TIMER pti,
+  PFILETIME pftDueTime,
+  DWORD     msPeriod,
+  DWORD     msWindowLength
+);
+
+extern(Windows) void CloseThreadpoolTimer(
+  PTP_TIMER pti
 );
 
 

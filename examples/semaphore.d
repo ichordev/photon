@@ -30,12 +30,10 @@ void main() {
     go({
         auto tm = timer();
         writeln("Main fiber started!");
-        tm.arm(1000.msecs);
-        tm.wait();
+        tm.wait(1000.msecs);
         writeln("Releasing two fibers!");
         sem.trigger(2);
-        tm.arm(1000.msecs);
-        tm.wait();
+        tm.wait(1000.msecs);
         writeln("Releasing one fiber!");
         sem.trigger(1);
         writeln("Main fiber exited!");

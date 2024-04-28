@@ -94,12 +94,12 @@ nothrow:
     }
 
     ///
-    void arm(const timespec* ts) {
-        arm(ts.tv_sec.seconds + ts.tv_nsec.nsecs);
+    void wait(const timespec* ts) {
+        wait(ts.tv_sec.seconds + ts.tv_nsec.nsecs);
     }
 
     ///
-    void arm(Duration dur) {
+    void wait(Duration dur) {
         KEvent event;
         event.ident = id;
         event.filter = EVFILT_TIMER;
@@ -110,9 +110,10 @@ nothrow:
         timespec timeout;
         timeout.tv_nsec = 1000;
         kevent(kq, &event, 1, null, 0, &timeout).checked("arming the timer");
+        FiberExt.yield();
     }
 
-    private void armThread(const timespec* ts) {
+    private void waitThread(const timespec* ts) {
         auto dur = ts.tv_sec.seconds + ts.tv_nsec.nsecs;
         KEvent event;
         event.ident = id;
@@ -124,24 +125,6 @@ nothrow:
         timespec timeout;
         timeout.tv_nsec = 1000;
         kevent(kq, &event, 1, null, 0, &timeout).checked("arming the timer for a thread");
-    }
-
-    ///
-    void disarm() {
-        KEvent event;
-        event.ident = id;
-        event.filter = EVFILT_TIMER;
-        event.flags = EV_DELETE;
-        event.fflags = 0;
-        event.data = 0;
-        timespec timeout;
-        timeout.tv_nsec = 1000;
-        kevent(kq, &event, 1, null, 0, &timeout);
-    }
-
-    ///
-    void wait() {
-        FiberExt.yield();
     }
 
     private size_t id;
@@ -522,9 +505,7 @@ nothrow void freeSleepTimer(Timer tm) {
 public nothrow void delay(T)(T req)
 if (is(T : const timespec*) || is(T : Duration)) {
     auto tm = getSleepTimer();
-    tm.arm(req);
-    tm.wait();
-    tm.disarm();
+    tm.wait(req);
     freeSleepTimer(tm);
 }
 
