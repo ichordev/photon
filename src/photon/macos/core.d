@@ -933,7 +933,7 @@ extern(C) private ssize_t nanosleep(const timespec* req, const timespec* rem) {
         return 0;
     } else {
         auto timer = getSleepTimer();
-        timer.armThread(req);
+        timer.waitThread(req);
         thread_suspend(mach_thread_self());
         return 0;
     }
