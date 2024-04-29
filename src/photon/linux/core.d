@@ -303,9 +303,7 @@ nothrow void freeSleepTimer(Timer tm) {
 public nothrow void delay(T)(T req)
 if (is(T : const timespec*) || is(T : Duration)) {
     auto tm = getSleepTimer();
-    tm.arm(req);
-    tm.wait();
-    tm.disarm();
+    tm.wait(req);
     freeSleepTimer(tm);
 }
 
