@@ -25,7 +25,7 @@ Typically the photon-powered program looks like this:
     {
 	"name" : "photon-example",
         "dependencies": {
-		         "photon": "0.7.2"
+		"photon": "0.8.0"
         }
     }
 +/
