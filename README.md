@@ -23,7 +23,7 @@ Typically the photon-powered program looks like this:
 #!/usr/bin/env dub
 /+ dub.json:
     {
-	    "name" : "photon-example",
+	"name" : "photon-example",
         "dependencies": {
 		         "photon": "0.7.2"
         }
@@ -40,7 +40,7 @@ void main() {
  runFibers(); // run all fibers on the scheduler, until all are completed
 }
 ```
-
+See more examples testing specific APIs [here](https://github.com/DmitryOlshansky/photon/tree/master/examples).
 ## Blocking, async and pseudo-blocking
 
 In short, there are roughly 3 ways (glossing over OS specific abilities) to tackle I/O.
