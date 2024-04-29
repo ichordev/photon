@@ -142,6 +142,12 @@ public auto timer() {
     return Timer();
 }
 
+///
+public void delay(Duration req) {
+    auto tm = Timer(); // Stateless on Windows
+    tm.wait(req);
+}
+
 struct SchedulerBlock {
     shared IntrusiveQueue!(FiberExt, RawEvent) queue;
     shared uint assigned;
