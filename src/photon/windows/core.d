@@ -44,14 +44,14 @@ extern(Windows) VOID waitCallback(PTP_CALLBACK_INSTANCE Instance, PVOID Context,
 
 /// Event object
 public struct Event {
-shared:
+
     @disable this(this);
 
     this(bool signaled) {
         ev = cast(shared(HANDLE))CreateEventA(null, FALSE, signaled, null);
         assert(ev != null, "Failed to create RawEvent");
     }
-
+shared:
     /// Wait for the event to be triggered, then reset and return atomically
     void waitAndReset() {
         auto wait = CreateThreadpoolWait(&waitCallback, cast(void*)currentFiber, &environ);
@@ -74,7 +74,7 @@ private:
 
 ///
 public auto event(bool signaled) {
-    return shared(Event)(signaled);
+    return Event(signaled);
 }
 
 /// Semaphore object
