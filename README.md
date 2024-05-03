@@ -13,7 +13,12 @@ D Ranges with asynchronous event streams are a natural extension looking forward
 
 ## Building
 
-Photon switched to using Dub for D targets. The usual dub build should work. See more about [DUB](https://dub.pm/getting-started/first-steps/#building-a-third-party-project)
+Photon switched to using Dub for D targets. The following will build release version of the library:
+```
+dub build -b release
+
+```
+See more about [DUB](https://dub.pm/getting-started/first-steps/#building-a-third-party-project).
 
 ## Usage
 
@@ -25,7 +30,7 @@ Typically the photon-powered program looks like this:
     {
 	"name" : "photon-example",
         "dependencies": {
-		"photon": "0.8.0"
+		"photon": "0.9.0"
         }
     }
 +/
@@ -41,6 +46,8 @@ void main() {
 }
 ```
 See more examples testing specific APIs [here](https://github.com/DmitryOlshansky/photon/tree/master/examples).
+
+
 ## Blocking, async and pseudo-blocking
 
 In short, there are roughly 3 ways (glossing over OS specific abilities) to tackle I/O.

@@ -9,12 +9,6 @@ ref T* unshared(T)(ref shared(T)* value) {
      return *cast(T**)&value;
 }
 
-interface WorkQueue(T) {
-    shared void push(T item);
-    shared T pop(); // blocks if empty
-    shared bool tryPop(ref T item); // non-blocking
-}
-
 // intrusive list helper
 T removeFromList(T)(T head, T item) {
 	if (head == item) return head.next;
