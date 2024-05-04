@@ -9,6 +9,7 @@ import std.exception;
 import std.conv;
 import std.array;
 import std.meta;
+import std.random;
 import core.thread;
 import core.internal.spinlock;
 import core.sys.posix.sys.types;
@@ -340,9 +341,11 @@ if (allSatisfy!(isAwaitable, Awaitable)) {
     do {
         resp = poll(fds, args.length, -1); 
     } while (resp < 0 && errno == EINTR);
-    foreach (i; 0..args.length) {
-        if (fds[i].revents & POLL_IN) {
-            return i;   
+    foreach (idx, ref fd; fds[0..args.length]) {
+        if (fd.revents & POLL_IN) {
+            ubyte[8] tmp;
+            read(fds[idx].fd, tmp.ptr, tmp.sizeof);
+            return idx;
         }
     }
     assert(0);
@@ -361,9 +364,11 @@ if (allSatisfy!(isAwaitable, Awaitable)) {
     do {
         resp = poll(fds, args.length, -1); 
     } while (resp < 0 && errno == EINTR);
-    foreach (i; 0..args.length) {
-        if (fds[i].revents & POLL_IN) {
-            return i;   
+    foreach (idx, ref fd; fds[0..args.length]) {
+        if (fd.revents & POLL_IN) {
+            ubyte[8] tmp;
+            read(fds[idx].fd, tmp.ptr, tmp.sizeof);
+            return idx;
         }
     }
     assert(0);
@@ -425,7 +430,6 @@ public void go(void function() func) {
 
 /// Setup a fiber task to run on the Photon scheduler.
 public void go(void delegate() func) {
-    import std.random;
     uint choice;
     if (scheds.length == 1) choice = 0;
     else {
@@ -1041,7 +1045,6 @@ extern(C) private ssize_t poll(pollfd *fds, nfds_t nfds, int timeout)
             fd.revents = 0;
         }
         ssize_t result = 0;
-        if (timeout <= 0) return raw_poll(fds, nfds, timeout);
         if (nonBlockingCheck(result)) return result;
         shared AwaitingFiber aw = shared(AwaitingFiber)(cast(shared)currentFiber);
         foreach (i; 0..nfds) {
@@ -1050,13 +1053,20 @@ extern(C) private ssize_t poll(pollfd *fds, nfds_t nfds, int timeout)
             else if(fds[i].events & POLLOUT)
                 descriptors[fds[i].fd].enqueueWriter(&aw);
         }
-        Timer tm = timer();
-        scope(exit) tm.dispose();
-        tm.arm(timeout.msecs);
-        descriptors[tm.fd].enqueueReader(&aw);
-        Fiber.yield();
-        tm.disarm();
-        atomicStore(descriptors[tm.fd]._readerWaits, cast(shared(AwaitingFiber)*)null);
+        int timeoutFd = -1;
+        if (timeout > 0) {
+            Timer tm = timer();
+            timeoutFd = tm.fd;
+            scope(exit) tm.dispose();
+            tm.arm(timeout.msecs);
+            descriptors[tm.fd].enqueueReader(&aw);
+            Fiber.yield();
+            tm.disarm();
+            atomicStore(descriptors[tm.fd]._readerWaits, cast(shared(AwaitingFiber)*)null);
+        }
+        else {
+            Fiber.yield();
+        }
         foreach (i; 0..nfds) {
             if (fds[i].events & POLLIN)
                 descriptors[fds[i].fd].removeReader(&aw);
@@ -1064,7 +1074,7 @@ extern(C) private ssize_t poll(pollfd *fds, nfds_t nfds, int timeout)
                 descriptors[fds[i].fd].removeWriter(&aw);
         }
         logf("Woke up after select %x. WakeFD=%d", cast(void*)currentFiber, currentFiber.wakeFd);
-        if (currentFiber.wakeFd == tm.fd) return 0;
+        if (currentFiber.wakeFd == timeoutFd) return 0;
         else {
             nonBlockingCheck(result);
             return result;

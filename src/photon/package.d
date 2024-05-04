@@ -157,7 +157,7 @@ enum isChannel(T) = is(T == Channel!(V), V);
 
 enum isHandler(T) = is(T == void delegate());
 
-template Even(T...) {
+private template Even(T...) {
     static assert(T.length % 2 == 0);
     static if (T.length > 0) {
         alias Even = AliasSeq!(T[0], Even!(T[2..$]));
@@ -167,7 +167,7 @@ template Even(T...) {
     }
 }
 
-template Odd(T...) {
+private template Odd(T...) {
     static assert(T.length % 2 == 0);
     static if (T.length > 0) {
         alias Odd = AliasSeq!(T[1], Odd!(T[2..$]));
