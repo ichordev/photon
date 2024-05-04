@@ -1,5 +1,7 @@
 # Photon - a transparent lightweight fiber scheduler
 
+![Build](https://github.com/DmitryOlshansky/photon/actions/workflows/build.yml/badge.svg)
+
 ## Intro
 
 Photon is a minimalistic multi-threaded fiber scheduler and event loop that works transparently with traditional blocking I/O C/C++/D/Rust libraries w/o degrading performance. For example one can run multituide of downloads with `std.net.curl` with fibers, no blocking - it is as fast as threads but using less resources. Think of it as Golang style concurrency that is brought to D transparently.
