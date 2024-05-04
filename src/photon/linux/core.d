@@ -8,6 +8,8 @@ import std.format;
 import std.exception;
 import std.conv;
 import std.array;
+import std.meta;
+import std.random;
 import core.thread;
 import core.internal.spinlock;
 import core.sys.posix.sys.types;
@@ -26,6 +28,7 @@ import core.sys.posix.fcntl;
 import core.memory;
 import core.sys.posix.sys.mman;
 import core.sys.posix.pthread;
+import core.stdc.stdlib;
 import core.sys.linux.sys.signalfd;
 
 import photon.linux.support;
@@ -75,10 +78,12 @@ nothrow:
         interceptFd!(Fcntl.noop)(evfd);
     }
 
+    int fd() { return evfd; }
+
     @disable this(this);
 
     /// Wait for the event to be triggered, then reset and return atomically
-    void waitAndReset() shared {
+    void waitAndReset() {
         byte[8] bytes = void;
         ssize_t r;
         do {
@@ -86,8 +91,12 @@ nothrow:
         } while (r < 0 && errno == EINTR);
     }
 
+    void waitAndReset() shared {
+        this.unshared.waitAndReset();
+    }
+
     /// Trigger the event.
-    void trigger() shared { 
+    void trigger() { 
         union U {
             ulong cnt;
             ubyte[8] bytes;
@@ -98,7 +107,11 @@ nothrow:
         do {
             r = write(evfd, value.bytes.ptr, value.sizeof);
         } while(r < 0 && errno == EINTR);
-    } 
+    }
+
+    void trigger() shared {
+        this.unshared.trigger();
+    }
 }
 
 ///
@@ -116,10 +129,12 @@ nothrow:
         interceptFd!(Fcntl.noop)(evfd);
     }
 
+    int fd() { return evfd; }
+
     @disable this(this);
 
     ///
-    void wait() shared {
+    void wait() {
         ubyte[8] bytes = void;
         ssize_t r;
         do {
@@ -128,8 +143,12 @@ nothrow:
         } while (r < 0 && errno == EINTR);
     }
 
+    void wait() shared {
+        this.unshared.wait();
+    }
+
     ///
-    void trigger(int count) shared {
+    void trigger(int count) {
         union U {
             ulong cnt;
             ubyte[8] bytes;
@@ -142,9 +161,17 @@ nothrow:
         } while(r < 0 && errno == EINTR);
     }
 
+    void trigger(int count) shared {
+        this.unshared.trigger(count);
+    }
+
     /// Free this semaphore
-    void dispose() shared {
+    void dispose() {
         close(evfd).checked;
+    }
+
+    void dispose() shared {
+        this.unshared.dispose();
     }
 }
 
@@ -297,6 +324,56 @@ if (is(T : const timespec*) || is(T : Duration)) {
     freeSleepTimer(tm);
 }
 
+/// 
+enum isAwaitable(E) = is (E : Event) || is (E : Semaphore) 
+    || is(E : Event*) || is(E : Semaphore*);
+
+///
+public size_t awaitAny(Awaitable...)(auto ref Awaitable args) 
+if (allSatisfy!(isAwaitable, Awaitable)) {
+    pollfd* fds = cast(pollfd*)calloc(args.length, pollfd.sizeof);
+    scope(exit) free(fds);
+    foreach (i, ref arg; args) {
+        fds[i].fd = arg.fd;
+        fds[i].events = POLL_IN;
+    }
+    int resp;
+    do {
+        resp = poll(fds, args.length, -1); 
+    } while (resp < 0 && errno == EINTR);
+    foreach (idx, ref fd; fds[0..args.length]) {
+        if (fd.revents & POLL_IN) {
+            ubyte[8] tmp;
+            read(fds[idx].fd, tmp.ptr, tmp.sizeof);
+            return idx;
+        }
+    }
+    assert(0);
+}
+
+///
+public size_t awaitAny(Awaitable)(Awaitable[] args) 
+if (allSatisfy!(isAwaitable, Awaitable)) {
+    pollfd* fds = cast(pollfd*)calloc(args.length, pollfd.sizeof);
+    scope(exit) free(fds);
+    foreach (i, ref arg; args) {
+        fds[i].fd = arg.fd;
+        fds[i].events = POLL_IN;
+    }
+    ssize_t resp;
+    do {
+        resp = poll(fds, args.length, -1); 
+    } while (resp < 0 && errno == EINTR);
+    foreach (idx, ref fd; fds[0..args.length]) {
+        if (fd.revents & POLL_IN) {
+            ubyte[8] tmp;
+            read(fds[idx].fd, tmp.ptr, tmp.sizeof);
+            return idx;
+        }
+    }
+    assert(0);
+}
+
 struct SchedulerBlock {
     shared IntrusiveQueue!(FiberExt, RawEvent) queue;
     shared uint assigned;
@@ -353,7 +430,6 @@ public void go(void function() func) {
 
 /// Setup a fiber task to run on the Photon scheduler.
 public void go(void delegate() func) {
-    import std.random;
     uint choice;
     if (scheds.length == 1) choice = 0;
     else {
@@ -969,7 +1045,6 @@ extern(C) private ssize_t poll(pollfd *fds, nfds_t nfds, int timeout)
             fd.revents = 0;
         }
         ssize_t result = 0;
-        if (timeout <= 0) return raw_poll(fds, nfds, timeout);
         if (nonBlockingCheck(result)) return result;
         shared AwaitingFiber aw = shared(AwaitingFiber)(cast(shared)currentFiber);
         foreach (i; 0..nfds) {
@@ -978,13 +1053,20 @@ extern(C) private ssize_t poll(pollfd *fds, nfds_t nfds, int timeout)
             else if(fds[i].events & POLLOUT)
                 descriptors[fds[i].fd].enqueueWriter(&aw);
         }
-        Timer tm = timer();
-        scope(exit) tm.dispose();
-        tm.arm(timeout.msecs);
-        descriptors[tm.fd].enqueueReader(&aw);
-        Fiber.yield();
-        tm.disarm();
-        atomicStore(descriptors[tm.fd]._readerWaits, cast(shared(AwaitingFiber)*)null);
+        int timeoutFd = -1;
+        if (timeout > 0) {
+            Timer tm = timer();
+            timeoutFd = tm.fd;
+            scope(exit) tm.dispose();
+            tm.arm(timeout.msecs);
+            descriptors[tm.fd].enqueueReader(&aw);
+            Fiber.yield();
+            tm.disarm();
+            atomicStore(descriptors[tm.fd]._readerWaits, cast(shared(AwaitingFiber)*)null);
+        }
+        else {
+            Fiber.yield();
+        }
         foreach (i; 0..nfds) {
             if (fds[i].events & POLLIN)
                 descriptors[fds[i].fd].removeReader(&aw);
@@ -992,7 +1074,7 @@ extern(C) private ssize_t poll(pollfd *fds, nfds_t nfds, int timeout)
                 descriptors[fds[i].fd].removeWriter(&aw);
         }
         logf("Woke up after select %x. WakeFD=%d", cast(void*)currentFiber, currentFiber.wakeFd);
-        if (currentFiber.wakeFd == tm.fd) return 0;
+        if (currentFiber.wakeFd == timeoutFd) return 0;
         else {
             nonBlockingCheck(result);
             return result;
