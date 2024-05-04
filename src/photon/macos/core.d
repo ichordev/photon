@@ -136,7 +136,7 @@ public nothrow auto timer() {
 }
 
 
-public shared struct Event {
+public struct Event {
 nothrow:
     @disable this(this);
 
@@ -148,16 +148,20 @@ nothrow:
     }
 
     /// Wait for the event to be triggered, then reset and return atomically
-    void waitAndReset() shared {
+    void waitAndReset() {
         byte[4096] bytes = void;
         ssize_t r;
         do {
             r = read(fds[0], bytes.ptr, bytes.sizeof);
         } while(r < 0 && errno == EINTR);
     }
+
+    void waitAndReset() shared {
+        this.unshared.waitAndReset();
+    }
     
     /// Trigger the event.
-    void trigger() shared { 
+    void trigger() { 
         ubyte[1] bytes = void;
         ssize_t r;
         do {
@@ -165,10 +169,18 @@ nothrow:
         } while(r < 0 && errno == EINTR);
     }
 
+    void trigger() shared {
+        this.unshared.trigger();
+    }
+
     ///
-    void dispose() shared {
+    void dispose() {
         close(fds[0]);
         close(fds[1]);
+    }
+
+    void dispose() shared {
+        this.unshared.dispose();
     }
 
     private int[2] fds;
@@ -180,7 +192,7 @@ public nothrow auto event(bool signaled) {
 }
 
 
-public shared struct Semaphore {
+public struct Semaphore {
 nothrow:
     @disable this(this);
 
@@ -194,16 +206,21 @@ nothrow:
     }
 
     /// 
-    void wait() shared {
+    void wait() {
         byte[1] bytes = void;
         ssize_t r;
         do {
             r = read(fds[0], bytes.ptr, bytes.sizeof);
         } while(r < 0 && errno == EINTR);
     }
+
+    ///
+    void wait() shared {
+        this.unshared.wait();
+    }
     
     /// 
-    void trigger(int count) shared { 
+    void trigger(int count) { 
         ubyte[4096] bytes = void;
         ssize_t size = count > 4096 ? 4096 : count;
         ssize_t r;
@@ -212,10 +229,20 @@ nothrow:
         } while(r < 0 && errno == EINTR);
     }
 
+    /// 
+    void trigger(int count) shared {
+        this.unshared.trigger(count);
+    }
+
     ///
     void dispose() {
         close(fds[0]);
         close(fds[1]);
+    }
+
+    ///
+    void dispose() shared {
+        this.unshared.dispose();
     }
 
     private int[2] fds;
