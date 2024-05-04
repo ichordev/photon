@@ -9,11 +9,15 @@ import core.thread;
 import core.internal.spinlock;
 import std.exception;
 import std.windows.syserror;
+import core.stdc.stdlib;
 import std.random;
 import std.stdio;
+import std.traits;
+import std.meta;
 
 import rewind.map;
 
+import photon.ds.common;
 import photon.ds.intrusive_queue;
 import photon.windows.support;
 
@@ -37,9 +41,40 @@ nothrow:
     HANDLE ev;
 }
 
+struct MultiAwait
+{
+    int n;
+    void delegate() trigger; 
+    MultiAwaitBox* box;
+}
+
+struct MultiAwaitBox {
+    shared size_t refCount;
+    shared FiberExt fiber;
+}
+
 extern(Windows) VOID waitCallback(PTP_CALLBACK_INSTANCE Instance, PVOID Context, PTP_WAIT  Wait, TP_WAIT_RESULT WaitResult) {
     auto fiber = cast(FiberExt)Context;
     fiber.schedule();
+}
+
+
+extern(Windows) VOID waitAnyCallback(PTP_CALLBACK_INSTANCE Instance, PVOID Context, PTP_WAIT  Wait, TP_WAIT_RESULT WaitResult) {
+    auto await = cast(MultiAwait*)Context;
+    auto fiber = cast()steal(await.box.fiber);
+    if (fiber) {
+        logf("AwaitAny callback waking up on %d object", await.n);
+        fiber.wakeUpObject = await.n;
+        fiber.schedule();
+    }
+    else {
+        logf("AwaitAny callback - triggering awaitable again");
+        await.trigger();
+    }
+    auto cnt = atomicFetchSub(await.box.refCount, 1);
+    if (cnt == 1) free(await.box);    
+    free(await);
+    CloseThreadpoolWait(Wait);
 }
 
 /// Event object
@@ -48,10 +83,10 @@ public struct Event {
     @disable this(this);
 
     this(bool signaled) {
-        ev = cast(shared(HANDLE))CreateEventA(null, FALSE, signaled, null);
-        assert(ev != null, "Failed to create RawEvent");
+        ev = cast(HANDLE)CreateEventA(null, FALSE, signaled, null);
+        assert(ev != null, "Failed to create Event");
     }
-shared:
+
     /// Wait for the event to be triggered, then reset and return atomically
     void waitAndReset() {
         auto wait = CreateThreadpoolWait(&waitCallback, cast(void*)currentFiber, &environ);
@@ -59,7 +94,25 @@ shared:
         SetThreadpoolWait(wait, cast(HANDLE)ev, null);
         FiberExt.yield();
         CloseThreadpoolWait(wait);
+    }
 
+    ///
+    void waitAndReset() shared {
+        this.unshared.waitAndReset();
+    }
+
+    private void registerForWaitAny(int n, MultiAwaitBox* box) {
+        auto context = cast(MultiAwait*)calloc(1, MultiAwait.sizeof);
+        context.box = box;
+        context.n = n;
+        context.trigger = cast(void delegate())&this.trigger;
+        auto wait = CreateThreadpoolWait(&waitAnyCallback, cast(void*)context, &environ);
+        wenforce(wait != null, "Failed to create threadpool wait object");
+        SetThreadpoolWait(wait, cast(HANDLE)ev, null);
+    }
+
+    private void registerForWaitAny(int n, MultiAwaitBox* box) shared {
+        this.unshared.registerForWaitAny(n, box);
     }
     
     /// Trigger the event.
@@ -67,27 +120,36 @@ shared:
         auto ret = SetEvent(cast(HANDLE)ev);
         assert(ret != 0);
     }
+
+    void trigger() shared {
+        this.unshared.trigger();
+    }
     
 private:
     HANDLE ev;
 }
 
 ///
-public auto event(bool signaled) {
+public Event event(bool signaled) {
     return Event(signaled);
 }
 
 /// Semaphore object
 public struct Semaphore {
-shared:
     @disable this(this);
 
     this(int count) {
         // set max count to MacOS pipe limit
-        sem = cast(shared(HANDLE))CreateSemaphoreA(null, count, 4096, null);
-        assert(sem != null, "Failed to create RawEvent");
+        sem = cast(HANDLE)CreateSemaphoreA(null, count, 4096, null);
+        assert(sem != null, "Failed to create semaphore");
     }
 
+    this(int count) shared {
+        // set max count to MacOS pipe limit
+        sem = cast(shared(HANDLE))CreateSemaphoreA(null, count, 4096, null);
+        assert(sem != null, "Failed to create semaphore");
+    }
+    
     /// 
     void wait() {
         auto wait = CreateThreadpoolWait(&waitCallback, cast(void*)currentFiber, &environ);
@@ -96,6 +158,25 @@ shared:
         FiberExt.yield();
         CloseThreadpoolWait(wait);
     }
+
+    void wait() shared {
+        this.unshared.wait();
+    }
+
+    private void registerForWaitAny(int n, MultiAwaitBox* box) {
+        auto context = cast(MultiAwait*)calloc(1, MultiAwait.sizeof);
+        context.box = box;
+        context.n = n;
+        context.trigger = { this.trigger(1); };
+        auto wait = CreateThreadpoolWait(&waitAnyCallback, cast(void*)context, &environ);
+        wenforce(wait != null, "Failed to create threadpool wait object");
+        SetThreadpoolWait(wait, cast(HANDLE)sem, null);
+    }
+
+    private void registerForWaitAny(int n, MultiAwaitBox* box) shared {
+        this.unshared.registerForWaitAny(n, box);
+    }
+
     
     /// 
     void trigger(int count) { 
@@ -103,9 +184,19 @@ shared:
         assert(ret);
     }
 
+    ///
+    void trigger(int count) shared {
+        this.unshared.trigger(count);
+    }
+
     /// 
     void dispose() {
         CloseHandle(cast(HANDLE)sem);
+    }
+
+    ///
+    void dispose() shared {
+        this.unshared.dispose();
     }
     
 private:
@@ -114,7 +205,7 @@ private:
 
 ///
 public auto semaphore(int count) {
-    return shared(Semaphore)(count);
+    return Semaphore(count);
 }
 
 extern(Windows) VOID timerCallback(PTP_CALLBACK_INSTANCE Instance, PVOID Context, PTP_TIMER Timer) {
@@ -148,6 +239,36 @@ public void delay(Duration req) {
     tm.wait(req);
 }
 
+/// 
+enum isAwaitable(E) = is (E : Event) || is (E : Semaphore) 
+    || is(E : Event*) || is(E : Semaphore*);
+
+///
+public size_t awaitAny(Awaitable...)(auto ref Awaitable args) 
+if (allSatisfy!(isAwaitable, Awaitable)) {
+    auto box = cast(MultiAwaitBox*)calloc(1, MultiAwaitBox.sizeof);
+    box.refCount = args.length;
+    box.fiber = cast(shared)currentFiber;
+    foreach (int i, ref v; args) {
+        v.registerForWaitAny(i, box);
+    }
+    FiberExt.yield();
+    return currentFiber.wakeUpObject;
+}
+
+///
+public size_t awaitAny(Awaitable)(Awaitable[] args) 
+if (allSatisfy!(isAwaitable, Awaitable)) {
+    auto box = cast(MultiAwaitBox*)calloc(1, MultiAwaitBox.sizeof);
+    box.refCount = args.length;
+    box.fiber = cast(shared)currentFiber;
+    foreach (int i, ref v; args) {
+        v.registerForWaitAny(i, box);
+    }
+    FiberExt.yield();
+    return currentFiber.wakeUpObject;
+}
+
 struct SchedulerBlock {
     shared IntrusiveQueue!(FiberExt, RawEvent) queue;
     shared uint assigned;
@@ -159,6 +280,7 @@ class FiberExt : Fiber {
     FiberExt next;
     uint numScheduler;
     int bytesTransfered;
+    int wakeUpObject;
 
     enum PAGESIZE = 4096;
     

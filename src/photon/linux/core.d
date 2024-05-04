@@ -33,16 +33,6 @@ import photon.linux.syscalls;
 import photon.ds.common;
 import photon.ds.intrusive_queue;
 
-// T becomes thread-local b/c it's stolen from shared resource
-auto steal(T)(ref shared T arg)
-{
-    for (;;) {
-        auto v = atomicLoad(arg);
-        if(cas(&arg, v, cast(shared(T))null)) return v;
-    }
-}
-
-
 shared struct RawEvent {
 nothrow:
     this(int init) {

@@ -13,7 +13,7 @@ struct RingQueue(T, Event)
     T* store;
     size_t length;
     size_t fetch, insert, size;
-    shared Event cts, rtr; // clear to send, ready to recieve
+    Event cts, rtr; // clear to send, ready to recieve
     bool closed;
     shared size_t refCount;
     AlignedSpinLock lock;
@@ -74,12 +74,17 @@ struct RingQueue(T, Event)
         return true;
     }
 
+    bool readyToRead() {
+        lock.lock();
+        scope(exit) lock.unlock();
+        return size > 0;
+    }
+
     bool empty() {
         lock.lock();
         scope(exit) lock.unlock();
         if (closed && size == 0) return true;
         return false;
-
     }
 
     void close() {
