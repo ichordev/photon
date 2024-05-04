@@ -8,6 +8,7 @@ import std.format;
 import std.exception;
 import std.conv;
 import std.array;
+import std.meta;
 import core.thread;
 import core.internal.spinlock;
 import core.sys.posix.sys.types;
@@ -26,6 +27,7 @@ import core.sys.posix.fcntl;
 import core.memory;
 import core.sys.posix.sys.mman;
 import core.sys.posix.pthread;
+import core.stdc.stdlib;
 import core.sys.linux.sys.signalfd;
 
 import photon.linux.support;
@@ -75,10 +77,12 @@ nothrow:
         interceptFd!(Fcntl.noop)(evfd);
     }
 
+    int fd() { return evfd; }
+
     @disable this(this);
 
     /// Wait for the event to be triggered, then reset and return atomically
-    void waitAndReset() shared {
+    void waitAndReset() {
         byte[8] bytes = void;
         ssize_t r;
         do {
@@ -86,8 +90,12 @@ nothrow:
         } while (r < 0 && errno == EINTR);
     }
 
+    void waitAndReset() shared {
+        this.unshared.waitAndReset();
+    }
+
     /// Trigger the event.
-    void trigger() shared { 
+    void trigger() { 
         union U {
             ulong cnt;
             ubyte[8] bytes;
@@ -98,7 +106,11 @@ nothrow:
         do {
             r = write(evfd, value.bytes.ptr, value.sizeof);
         } while(r < 0 && errno == EINTR);
-    } 
+    }
+
+    void trigger() shared {
+        this.unshared.trigger();
+    }
 }
 
 ///
@@ -116,10 +128,12 @@ nothrow:
         interceptFd!(Fcntl.noop)(evfd);
     }
 
+    int fd() { return evfd; }
+
     @disable this(this);
 
     ///
-    void wait() shared {
+    void wait() {
         ubyte[8] bytes = void;
         ssize_t r;
         do {
@@ -128,8 +142,12 @@ nothrow:
         } while (r < 0 && errno == EINTR);
     }
 
+    void wait() shared {
+        this.unshared.wait();
+    }
+
     ///
-    void trigger(int count) shared {
+    void trigger(int count) {
         union U {
             ulong cnt;
             ubyte[8] bytes;
@@ -142,9 +160,17 @@ nothrow:
         } while(r < 0 && errno == EINTR);
     }
 
+    void trigger(int count) shared {
+        this.unshared.trigger(count);
+    }
+
     /// Free this semaphore
-    void dispose() shared {
+    void dispose() {
         close(evfd).checked;
+    }
+
+    void dispose() shared {
+        this.unshared.dispose();
     }
 }
 
@@ -295,6 +321,52 @@ if (is(T : const timespec*) || is(T : Duration)) {
     auto tm = getSleepTimer();
     tm.wait(req);
     freeSleepTimer(tm);
+}
+
+/// 
+enum isAwaitable(E) = is (E : Event) || is (E : Semaphore) 
+    || is(E : Event*) || is(E : Semaphore*);
+
+///
+public size_t awaitAny(Awaitable...)(auto ref Awaitable args) 
+if (allSatisfy!(isAwaitable, Awaitable)) {
+    pollfd* fds = cast(pollfd*)calloc(args.length, pollfd.sizeof);
+    scope(exit) free(fds);
+    foreach (i, ref arg; args) {
+        fds[i].fd = arg.fd;
+        fds[i].events = POLL_IN;
+    }
+    int resp;
+    do {
+        resp = poll(fds, args.length, -1); 
+    } while (resp < 0 && errno == EINTR);
+    foreach (i; 0..args.length) {
+        if (fds[i].revents & POLL_IN) {
+            return i;   
+        }
+    }
+    assert(0);
+}
+
+///
+public size_t awaitAny(Awaitable)(Awaitable[] args) 
+if (allSatisfy!(isAwaitable, Awaitable)) {
+    pollfd* fds = cast(pollfd*)calloc(args.length, pollfd.sizeof);
+    scope(exit) free(fds);
+    foreach (i, ref arg; args) {
+        fds[i].fd = arg.fd;
+        fds[i].events = POLL_IN;
+    }
+    ssize_t resp;
+    do {
+        resp = poll(fds, args.length, -1); 
+    } while (resp < 0 && errno == EINTR);
+    foreach (i; 0..args.length) {
+        if (fds[i].revents & POLL_IN) {
+            return i;   
+        }
+    }
+    assert(0);
 }
 
 struct SchedulerBlock {
