@@ -391,7 +391,9 @@ package(photon) void schedulerEntry(size_t n)
     int tid = gettid();
     cpu_set_t mask;
     CPU_SET(n, &mask);
-    sched_setaffinity(tid, mask.sizeof, &mask).checked("sched_setaffinity");
+    if (sched_setaffinity(tid, mask.sizeof, &mask) < 0) {
+        photon.linux.support.perror("sched_setaffinity");
+    }
     shared SchedulerBlock* sched = scheds.ptr + n;
     while (alive > 0) {
         sched.queue.event.waitAndReset();
