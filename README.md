@@ -13,10 +13,6 @@ LibC syscall wrapper is overriden to be aware of D fiber scheduling and transpar
 Explicit async model with tasks/futures could be integrated with pseudoblocking fiber scheduling,
 D Ranges with asynchronous event streams are a natural extension looking forward.
 
-## Documentation
-
-
-
 ## Building
 
 Photon switched to using Dub for D targets. The following will build release version of the library:
@@ -28,6 +24,7 @@ See more about [DUB](https://dub.pm/getting-started/first-steps/#building-a-thir
 
 ## Usage
 
+See [DDoc documentation](https://dmitryolshansky.github.io/photon/) and [the examples folder](https://github.com/DmitryOlshansky/photon/tree/master/examples).
 Typically the photon-powered program looks like this:
 
 ```d
@@ -51,8 +48,6 @@ void main() {
  runFibers(); // run all fibers on the scheduler, until all are completed
 }
 ```
-See more examples testing specific APIs [here](https://github.com/DmitryOlshansky/photon/tree/master/examples).
-
 
 ## Blocking, async and pseudo-blocking
 
