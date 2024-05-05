@@ -100,6 +100,11 @@ nothrow:
 
     ///
     void wait(Duration dur) {
+        arm(dur);
+        FiberExt.yield();
+    }
+
+    void arm(Duration dur) {
         KEvent event;
         event.ident = id;
         event.filter = EVFILT_TIMER;
@@ -110,7 +115,15 @@ nothrow:
         timespec timeout;
         timeout.tv_nsec = 1000;
         kevent(kq, &event, 1, null, 0, &timeout).checked("arming the timer");
-        FiberExt.yield();
+    }
+
+    void disarm() {
+        KEvent event;
+        event.ident = id;
+        event.filter = EVFILT_TIMER;
+        event.flags = EV_DELETE;
+        event.fflags = 0;
+        kevent(kq, &event, 1, null, 0, &timeout).checked("canceling the timer");
     }
 
     private void waitThread(const timespec* ts) {
@@ -299,6 +312,8 @@ struct AwaitingFiber {
         }
     }
 }
+
+enum wokenUpByTimer = 2;
 
 class FiberExt : Fiber { 
     FiberExt next;
@@ -686,6 +701,7 @@ extern(C) void* processEventsEntry(void*)
                 if (udata & 0x1) {
                     auto ptr = udata & ~1;
                     FiberExt fiber = *cast(FiberExt*)&ptr;
+                    fiber.wakeFd = wokenUpByTimer;
                     fiber.schedule();
                 }
                 else {
@@ -978,7 +994,10 @@ extern(C) private ssize_t poll(pollfd *fds, nfds_t nfds, int timeout)
     }
     else {
         logf("HOOKED POLL %d fds timeout %d", nfds, timeout);
-        if (nfds < 0) return -EINVAL.withErrorno;
+        if (nfds < 0) {
+            errno = EINVAL;
+            return -1;
+        }
         if (nfds == 0) {
             if (timeout == 0) return 0;
             shared AwaitingFiber aw = shared(AwaitingFiber)(cast(shared)currentFiber);
@@ -992,7 +1011,10 @@ extern(C) private ssize_t poll(pollfd *fds, nfds_t nfds, int timeout)
             return 0;
         }
         foreach(ref fd; fds[0..nfds]) {
-            if (fd.fd < 0 || fd.fd >= descriptors.length) return -EBADF.withErrorno;
+            if (fd.fd < 0 || fd.fd >= descriptors.length) {
+                errno = EBADF;
+                return -1;
+            }
             fd.revents = 0;
         }
         ssize_t result = 0;
@@ -1004,19 +1026,14 @@ extern(C) private ssize_t poll(pollfd *fds, nfds_t nfds, int timeout)
             else if(fds[i].events & POLLOUT)
                 descriptors[fds[i].fd].enqueueWriter(&aw);
         }
-        int timeoutFd = -1;
         if (timeout > 0) {
             Timer tm = timer();
-            timeoutFd = tm.fd;
-            scope(exit) tm.dispose();
             tm.arm(timeout.msecs);
-            descriptors[tm.fd].enqueueReader(&aw);
-            Fiber.yield();
-            tm.disarm();
-            atomicStore(descriptors[tm.fd]._readerWaits, cast(shared(AwaitingFiber)*)null);
+            FiberExt.yield();
+            tm.cancel();
         }
         else {
-            Fiber.yield();
+            FiberExt.yield();
         }
         foreach (i; 0..nfds) {
             if (fds[i].events & POLLIN)
@@ -1025,7 +1042,7 @@ extern(C) private ssize_t poll(pollfd *fds, nfds_t nfds, int timeout)
                 descriptors[fds[i].fd].removeWriter(&aw);
         }
         logf("Woke up after select %x. WakeFD=%d", cast(void*)currentFiber, currentFiber.wakeFd);
-        if (currentFiber.wakeFd == timeoutFd) return 0;
+        if (currentFiber.wakeFd == wokenUpByTimer) return 0;
         else {
             nonBlockingCheck(result);
             return result;
