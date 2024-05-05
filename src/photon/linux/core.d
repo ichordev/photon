@@ -870,38 +870,6 @@ ssize_t universalSyscall(size_t ident, string name, SyscallKind kind, Fcntl fcnt
     }
 }
 
-class Channel(T) {
-    private T[] buf;
-    private size_t size;
-    private Event ev;
-    void put(T item) {
-        if (buf.length == size) {
-            ev.await();
-        }
-        if (buf.length == 0) ev.reset();
-        buf ~= item;
-    }
-    auto front() {
-        if (buf.length == 0) {
-            ev.await();
-        }
-        if (buf.length == size) ev.reset();
-        return buf[$-1];
-    }
-    void popFront() {
-        buf = buf[0..$-1];
-        ev.reset();
-        buf.assumeSafeAppend();
-    }
-    bool empty() {
-        return buf.length == 0;
-    }
-}
-
-Channel!T channel(T)(size_t size) {
-    return new Channel(new T[size], size, Event());
-}
-
 // ======================================================================================
 // SYSCALL warappers intercepts
 // ======================================================================================

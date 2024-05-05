@@ -130,8 +130,8 @@ private:
 }
 
 ///
-public Event event(bool signaled) {
-    return Event(signaled);
+public auto event(bool signaled) {
+    return cast(shared)Event(signaled);
 }
 
 /// Semaphore object
@@ -205,7 +205,7 @@ private:
 
 ///
 public auto semaphore(int count) {
-    return Semaphore(count);
+    return cast(shared)Semaphore(count);
 }
 
 extern(Windows) VOID timerCallback(PTP_CALLBACK_INSTANCE Instance, PVOID Context, PTP_TIMER Timer) {

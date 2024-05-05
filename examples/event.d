@@ -34,8 +34,8 @@ void secondJob() {
 }
 
 void main() {
-    ev1 = cast(shared)event(false);
-    ev2 = cast(shared)event(false);
+    ev1 = event(false);
+    ev2 = event(false);
     startloop();
     go(&firstJob);
     go(&secondJob);

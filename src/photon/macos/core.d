@@ -213,7 +213,7 @@ nothrow:
 
 ///
 public nothrow auto event(bool signaled) {
-    return Event(signaled);
+    return cast(shared)Event(signaled);
 }
 
 
@@ -285,7 +285,7 @@ nothrow:
 
 ///
 public nothrow auto semaphore(int initial) {
-    return Semaphore(initial);
+    return cast(shared)Semaphore(initial);
 }
 
 struct AwaitingFiber {

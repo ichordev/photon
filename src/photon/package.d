@@ -51,7 +51,7 @@ struct Channel(T) {
     bool loaded;
 
     this(size_t capacity) {
-        buf = allocRingQueue!T(capacity, event(false), event(false));
+        buf = allocRingQueue!T(capacity, Event(false), Event(false));
     }
 
     this(this) {
