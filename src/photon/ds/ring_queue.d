@@ -123,8 +123,8 @@ void disposeRingQueue(T, Event)(RingQueue!(T, Event)* q) {
 unittest {
     import photon;
     import std.exception;
-    auto cts = event(false);
-    auto rtr = event(false);
+    auto cts = Event(false);
+    auto rtr = Event(false);
     auto q = allocRingQueue!(int, Event)(2, move(cts), move(rtr));
     q.push(1);
     q.push(2);
@@ -142,8 +142,8 @@ unittest {
 
 unittest {
     import photon;
-    auto cts = event(false);
-    auto rtr = event(false);
+    auto cts = Event(false);
+    auto rtr = Event(false);
     auto q = allocRingQueue!(string, Event)(1, move(cts), move(rtr));
     assert(!q.empty);
     q.push("hello");
