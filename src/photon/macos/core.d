@@ -123,6 +123,8 @@ nothrow:
         event.filter = EVFILT_TIMER;
         event.flags = EV_DELETE;
         event.fflags = 0;
+        timespec timeout;
+        timeout.tv_nsec = 1000;
         kevent(kq, &event, 1, null, 0, &timeout).checked("canceling the timer");
     }
 
@@ -1002,11 +1004,8 @@ extern(C) private ssize_t poll(pollfd *fds, nfds_t nfds, int timeout)
             if (timeout == 0) return 0;
             shared AwaitingFiber aw = shared(AwaitingFiber)(cast(shared)currentFiber);
             Timer tm = timer();
-            descriptors[tm.fd].enqueueReader(&aw);
-            scope(exit) tm.dispose();
             tm.arm(timeout.msecs);
-            logf("Timer fd=%d", tm.fd);
-            Fiber.yield();
+            FiberExt.yield();
             logf("Woke up after select %x. WakeFd=%d", cast(void*)currentFiber, currentFiber.wakeFd);
             return 0;
         }
@@ -1030,7 +1029,7 @@ extern(C) private ssize_t poll(pollfd *fds, nfds_t nfds, int timeout)
             Timer tm = timer();
             tm.arm(timeout.msecs);
             FiberExt.yield();
-            tm.cancel();
+            tm.disarm();
         }
         else {
             FiberExt.yield();
