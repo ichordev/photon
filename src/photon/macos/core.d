@@ -575,6 +575,10 @@ if (is(T : const timespec*) || is(T : Duration)) {
     freeSleepTimer(tm);
 }
 
+// 
+enum isAwaitable(E) = is (E : Event) || is (E : Semaphore) 
+    || is(E : Event*) || is(E : Semaphore*);
+
 public size_t awaitAny(Awaitable...)(auto ref Awaitable args) 
 if (allSatisfy!(isAwaitable, Awaitable)) {
     pollfd* fds = cast(pollfd*)calloc(args.length, pollfd.sizeof);
