@@ -1,4 +1,5 @@
 #!/bin/sh
 for name in *.d ; do
-    dub $name
+    dub $name || exit 1
 done
+
