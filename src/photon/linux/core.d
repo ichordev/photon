@@ -73,7 +73,7 @@ public struct Event {
 nothrow:
     private int evfd;
 
-    private this(bool signaled) {
+    this(bool signaled) {
         evfd = eventfd(signaled ? 1 : 0, EFD_NONBLOCK);
         interceptFd!(Fcntl.noop)(evfd);
     }
