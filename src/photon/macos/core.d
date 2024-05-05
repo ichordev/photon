@@ -21,6 +21,7 @@ import core.sync.mutex;
 import core.stdc.errno;
 import core.stdc.signal;
 import core.stdc.time;
+import core.stdc.stdlib;
 import core.atomic;
 import core.sys.posix.stdlib: abort;
 import core.sys.posix.fcntl;
@@ -589,7 +590,7 @@ if (allSatisfy!(isAwaitable, Awaitable)) {
     }
     int resp;
     do {
-        resp = poll(fds, args.length, -1); 
+        resp = poll(fds, cast(nfds_t)args.length, -1); 
     } while (resp < 0 && errno == EINTR);
     foreach (idx, ref arg; args) {
         auto fd = fds[idx];
@@ -611,7 +612,7 @@ if (allSatisfy!(isAwaitable, Awaitable)) {
     }
     ssize_t resp;
     do {
-        resp = poll(fds, args.length, -1); 
+        resp = poll(fds, cast(nfds_t)args.length, -1); 
     } while (resp < 0 && errno == EINTR);
     foreach (idx, ref arg; args) {
         auto fd = fds[idx];

@@ -1,6 +1,7 @@
 # Photon - a transparent lightweight fiber scheduler
 
 ![Build](https://github.com/DmitryOlshansky/photon/actions/workflows/build.yml/badge.svg)
+![Examples](https://github.com/DmitryOlshansky/photon/actions/workflows/examples.yml/badge.svg)
 
 ## Intro
 
