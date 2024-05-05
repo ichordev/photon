@@ -8,6 +8,8 @@ import std.format;
 import std.exception;
 import std.conv;
 import std.array;
+import std.meta;
+
 import core.thread;
 import core.internal.spinlock;
 import core.sys.posix.sys.types;
