@@ -14,11 +14,15 @@ else static assert(false, "Target OS not supported by Photon yet!");
 
 version(PhotonDocs) {
 
-/// Convenience overload for functions
-public void go(void function() func);
+/// Initialize event loop and internal data structures for Photon scheduler.
+public void startloop();
 
 /// Setup a fiber task to run on the Photon scheduler.
 public void go(void delegate() func);
+
+/// ditto
+public void go(void function() func);
+
 
 }
 

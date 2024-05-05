@@ -516,7 +516,7 @@
   <li class="ddoc_member">
   <div class="ddoc_member_header">
   <div class="ddoc_header_anchor">
-  <a href="#go" id="go"><code class="code">go</code></a>
+  <a href="#startloop" id="startloop"><code class="code">startloop</code></a>
 </div>
 </div><div class="ddoc_decl">
   <section class="section">
@@ -525,7 +525,7 @@
       <div class="dlang">
         <p class="para">
           <code class="code">
-            <span class="ddoc_anchor" id="go"></span>void <code class="code">go</code>(void function() <code class="code">func</code>);
+            <span class="ddoc_anchor" id="startloop"></span>void <code class="code">startloop</code>();
 
           </code>
         </p>
@@ -537,7 +537,7 @@
   <section class="section ddoc_sections">
   <div class="ddoc_summary">
   <p class="para">
-    Convenience overload for functions
+    Initialize event loop and internal data structures for Photon scheduler.
   </p>
 </div>
 
@@ -558,6 +558,8 @@
         <p class="para">
           <code class="code">
             <span class="ddoc_anchor" id="go"></span>void <code class="code">go</code>(void delegate() <code class="code">func</code>);
+<br>
+void <code class="code">go</code>(void function() <code class="code">func</code>);
 
           </code>
         </p>
