@@ -13,6 +13,10 @@ LibC syscall wrapper is overriden to be aware of D fiber scheduling and transpar
 Explicit async model with tasks/futures could be integrated with pseudoblocking fiber scheduling,
 D Ranges with asynchronous event streams are a natural extension looking forward.
 
+## Documentation
+
+
+
 ## Building
 
 Photon switched to using Dub for D targets. The following will build release version of the library:

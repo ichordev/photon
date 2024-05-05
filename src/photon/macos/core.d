@@ -147,6 +147,8 @@ nothrow:
         this.fds = fds;
     }
 
+    private int fd() { return fds[0]; }
+
     /// Wait for the event to be triggered, then reset and return atomically
     void waitAndReset() {
         byte[4096] bytes = void;
@@ -158,6 +160,14 @@ nothrow:
 
     void waitAndReset() shared {
         this.unshared.waitAndReset();
+    }
+
+    private void reset() {
+        waitAndReset();
+    }
+
+    private void reset() shared {
+        waitAndReset();
     }
     
     /// Trigger the event.
@@ -205,6 +215,8 @@ nothrow:
         this.fds = fds;
     }
 
+    private int fd() { return fds[0]; }
+
     /// 
     void wait() {
         byte[1] bytes = void;
@@ -217,6 +229,14 @@ nothrow:
     ///
     void wait() shared {
         this.unshared.wait();
+    }
+
+    private void reset() {
+        wait();
+    }
+
+    private void reset() shared {
+        wait();
     }
     
     /// 
@@ -536,6 +556,50 @@ if (is(T : const timespec*) || is(T : Duration)) {
     freeSleepTimer(tm);
 }
 
+public size_t awaitAny(Awaitable...)(auto ref Awaitable args) 
+if (allSatisfy!(isAwaitable, Awaitable)) {
+    pollfd* fds = cast(pollfd*)calloc(args.length, pollfd.sizeof);
+    scope(exit) free(fds);
+    foreach (i, ref arg; args) {
+        fds[i].fd = arg.fd;
+        fds[i].events = POLL_IN;
+    }
+    int resp;
+    do {
+        resp = poll(fds, args.length, -1); 
+    } while (resp < 0 && errno == EINTR);
+    foreach (idx, ref arg; args) {
+        auto fd = fds[idx];
+        if (fd.revents & POLL_IN) {
+            arg.reset();
+            return idx;
+        }
+    }
+    assert(0);
+}
+
+public size_t awaitAny(Awaitable)(Awaitable[] args) 
+if (allSatisfy!(isAwaitable, Awaitable)) {
+    pollfd* fds = cast(pollfd*)calloc(args.length, pollfd.sizeof);
+    scope(exit) free(fds);
+    foreach (i, ref arg; args) {
+        fds[i].fd = arg.fd;
+        fds[i].events = POLL_IN;
+    }
+    ssize_t resp;
+    do {
+        resp = poll(fds, args.length, -1); 
+    } while (resp < 0 && errno == EINTR);
+    foreach (idx, ref arg; args) {
+        auto fd = fds[idx];
+        if (fd.revents & POLL_IN) {
+            arg.reset();
+            return idx;
+        }
+    }
+    assert(0);
+}
+
 public void startloop()
 {
     int threads = cast(int)sysconf(_SC_NPROCESSORS_ONLN).checked;
@@ -847,7 +911,7 @@ extern(C) private ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags,
 
 extern(C) private ssize_t poll(pollfd *fds, nfds_t nfds, int timeout)
 {
-    bool nonBlockingCheck(ref ssize_t result) {
+    nothrow bool nonBlockingCheck(ref ssize_t result) {
         bool uncertain;
     L_cacheloop:
         foreach (ref fd; fds[0..nfds]) {
@@ -914,26 +978,24 @@ extern(C) private ssize_t poll(pollfd *fds, nfds_t nfds, int timeout)
     }
     else {
         logf("HOOKED POLL %d fds timeout %d", nfds, timeout);
-        if (nfds < 0) {
-            errno = EINVAL;
-            return -1;
-        }
+        if (nfds < 0) return -EINVAL.withErrorno;
         if (nfds == 0) {
             if (timeout == 0) return 0;
             shared AwaitingFiber aw = shared(AwaitingFiber)(cast(shared)currentFiber);
+            Timer tm = timer();
+            descriptors[tm.fd].enqueueReader(&aw);
+            scope(exit) tm.dispose();
+            tm.arm(timeout.msecs);
+            logf("Timer fd=%d", tm.fd);
             Fiber.yield();
             logf("Woke up after select %x. WakeFd=%d", cast(void*)currentFiber, currentFiber.wakeFd);
             return 0;
         }
         foreach(ref fd; fds[0..nfds]) {
-            if (fd.fd < 0 || fd.fd >= descriptors.length) {
-                errno = EBADF;
-                return -1;
-            }
+            if (fd.fd < 0 || fd.fd >= descriptors.length) return -EBADF.withErrorno;
             fd.revents = 0;
         }
         ssize_t result = 0;
-        if (timeout <= 0) return raw_poll(fds, nfds, timeout);
         if (nonBlockingCheck(result)) return result;
         shared AwaitingFiber aw = shared(AwaitingFiber)(cast(shared)currentFiber);
         foreach (i; 0..nfds) {
@@ -942,15 +1004,32 @@ extern(C) private ssize_t poll(pollfd *fds, nfds_t nfds, int timeout)
             else if(fds[i].events & POLLOUT)
                 descriptors[fds[i].fd].enqueueWriter(&aw);
         }
-        Fiber.yield();
+        int timeoutFd = -1;
+        if (timeout > 0) {
+            Timer tm = timer();
+            timeoutFd = tm.fd;
+            scope(exit) tm.dispose();
+            tm.arm(timeout.msecs);
+            descriptors[tm.fd].enqueueReader(&aw);
+            Fiber.yield();
+            tm.disarm();
+            atomicStore(descriptors[tm.fd]._readerWaits, cast(shared(AwaitingFiber)*)null);
+        }
+        else {
+            Fiber.yield();
+        }
         foreach (i; 0..nfds) {
             if (fds[i].events & POLLIN)
                 descriptors[fds[i].fd].removeReader(&aw);
             else if(fds[i].events & POLLOUT)
                 descriptors[fds[i].fd].removeWriter(&aw);
         }
-        nonBlockingCheck(result);
-        return result;
+        logf("Woke up after select %x. WakeFD=%d", cast(void*)currentFiber, currentFiber.wakeFd);
+        if (currentFiber.wakeFd == timeoutFd) return 0;
+        else {
+            nonBlockingCheck(result);
+            return result;
+        }
     }
 }
 

@@ -24,12 +24,13 @@ void main() {
     auto second = channel!(string)(1);
     go({
         delay(500.msecs);
-        first.put(42);
+        first.put(0);
+        first.put(1);
         delay(500.msecs);
         second.put("ping");
     });
     go({
-        foreach ( _; 0..2) {
+        foreach ( _; 0..3) {
             select(
                 first, { 
                     writefln("Got first %s", first.take(1));

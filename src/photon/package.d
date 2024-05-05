@@ -12,6 +12,16 @@ else version(freeBSD) public import photon.freebsd.core;
 else version(OSX) public import photon.macos.core;
 else static assert(false, "Target OS not supported by Photon yet!");
 
+version(PhotonDocs) {
+
+/// Convenience overload for functions
+public void go(void function() func);
+
+/// Setup a fiber task to run on the Photon scheduler.
+public void go(void delegate() func);
+
+}
+
 /// Start sheduler and run fibers until all are terminated.
 void runFibers()
 {
@@ -30,6 +40,11 @@ void runFibers()
     version(linux) stoploop();
 }
 
+/++
+    A ref-counted channel that is safe to share between multiple fibers.
+    In essence it's a multiple producer single consumer queue, that implements
+    `OutputRange` and `InputRange` concepts.
++/
 struct Channel(T) {
     __gshared RingQueue!(T, Event)* buf;
     __gshared T item;
@@ -43,6 +58,7 @@ struct Channel(T) {
         buf.retain();
     }
 
+    /// OutputRange contract - puts a new item into the channel.
     void put(T value) {
         buf.push(move(value));
     }
@@ -55,6 +71,10 @@ struct Channel(T) {
         buf.close();
     }
 
+    /++
+        Part of InputRange contract - checks if there is an item in the queue.
+        Returns `true` if channel is closed and its buffer is exhausted.
+    +/
     bool empty() {
         if (loaded) return false;
         loaded = buf.tryPop(item);
@@ -67,6 +87,9 @@ struct Channel(T) {
         return !loaded;
     }
 
+    /++
+        Part of InputRange contract - returns an item available in the channel.
+    +/
     ref T front() {
         return cast()item;
     }
@@ -75,6 +98,9 @@ struct Channel(T) {
         return item;
     }
 
+    /++
+        Part of InputRange contract - advances range forward.
+    +/
     void popFront() {
         loaded = false;
     }
@@ -94,9 +120,7 @@ struct Channel(T) {
 }
 
 /++
-    Create ref-counted channel that is safe to shared between multiple fibers.
-    In essence it's a multiple producer single consumer queue, that implements
-    `OutputRange` and `InputRange` concepts.
+    Create a new shared `Channel` with given capacity.
 +/
 auto channel(T)(size_t capacity = 1) {
     return cast(shared)Channel!T(capacity);
@@ -135,6 +159,10 @@ if (allSatisfy!(isChannel, Even!Args) && allSatisfy!(isHandler, Odd!Args)) {
         else {
             handlers[i/2] = v;
         }
+    }
+    foreach (i, channel; Even!(args)) {
+        if (channel.buf.readyToRead())
+            return handlers[i]();
     }
     for (;;) {
         auto n = awaitAny(events[]);
