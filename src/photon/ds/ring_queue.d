@@ -64,13 +64,11 @@ struct RingQueue(T, Event)
             lock.unlock();
             return false;
         }
-        bool notify = false;
         move(store[fetch++], output);
         if (fetch == length) fetch = 0;
-        if (size == length) notify = true;
         size -= 1;
         lock.unlock();
-        if (notify) cts.trigger();
+        cts.trigger();
         return true;
     }
 
