@@ -7,20 +7,6 @@
     
     Example, showcasing channels and std.range interop:
     ----
-    /+ dub.json:
-        {
-        "authors": [
-            "Dmitry Olshansky"
-        ],
-        "copyright": "Copyright © 2024, Dmitry Olshansky",
-        "dependencies": {
-            "photon": { "path": ".." }
-        },
-        "description": "A test for channels API",
-        "license": "BOOST",
-        "name": "channels"
-    }
-    +/
     module examples.channels;
 
     import std.algorithm, std.datetime, std.range, std.stdio;
@@ -72,6 +58,8 @@
 module photon;
 
 import core.thread;
+import core.atomic;
+import core.internal.spinlock;
 import core.lifetime;
 import std.meta;
 
@@ -285,4 +273,148 @@ unittest {
     static assert(Odd!(1, 2, 3, 4) == AliasSeq!(2, 4));
     static assert(isChannel!(Channel!int));
     static assert(isChannel!(shared Channel!int));
+}
+
+struct PooledEntry(T) {
+    import std.datetime;
+private:
+    PooledEntry* next;
+    SysTime lastUsed;
+    T item;
+}
+
+struct Pooled(T) {
+    alias get this;
+    @property ref get() const { return pointer.item; }
+    private PooledEntry!T* pointer;
+}
+
+/// Generic pool
+struct Pool(T) {
+    import std.datetime, photon.ds.common;
+    private this(size_t size, Duration maxIdle, T delegate() open, void delegate(ref T) close) {
+        this.size = size;
+        this.maxIdle = maxIdle;
+        this.open = open;
+        this.close = close;
+        this.allocated = 0;
+        this.ready = event(0);
+        this.working = true;
+        this.lock = SpinLock(SpinLock.Contention.brief);
+        go({
+            while(this.working) {
+                delay(1.seconds);
+                auto time = Clock.currTime();
+                lock.lock();
+                PooledEntry!T* stale;
+                PooledEntry!T* fresh;
+                PooledEntry!T* current = pool;
+                while (current != null) {
+                    if (current.lastUsed + maxIdle < time) {
+                        auto next = current.next;
+                        current.next = stale;
+                        stale = current;
+                        current = next;
+                    }
+                    else {
+                        auto next = current.next;
+                        current.next = fresh;
+                        fresh = current;
+                        current = next;
+                    }
+                }
+                pool = fresh;
+                lock.unlock();
+                current = stale;
+                size_t count = 0;
+                while (current != null) {
+                    close(current.item);
+                    current = current.next;
+                    count++;
+                }
+                atomicFetchSub(allocated, count);
+                if (count > 0) ready.trigger();
+            }
+        });
+    }
+
+    // Acquire resource from the pool
+    Pooled!T acquire() {
+        for (;;) {
+            lock.lock();
+            if (pool != null) {
+                auto next = pool.next;
+                auto ret = pool;
+                ret.next = null;
+                pool = next;
+                lock.unlock();
+                return Pooled!T(ret);
+            }
+            lock.unlock();
+            if (allocated < size) {
+                size_t current = allocated;
+                size_t next = current + 1;
+                if (cas(&allocated, current, next)) {
+                    // since we are not in the pool yet, lastUsed is ignored
+                    auto item = new PooledEntry!T(null, SysTime.init, open());
+                    return Pooled!T(item);
+                }
+            }
+            ready.waitAndReset();
+        }
+    }
+
+    Pooled!T acquire() shared {
+        return this.unshared.acquire();
+    }
+
+    /// Put pooled item to reuse
+    void release(Pooled!T item) {
+        item.pointer.lastUsed = Clock.currTime();
+        lock.lock();
+        item.pointer.next = pool;
+        pool = item.pointer;
+        lock.unlock();
+        ready.trigger();
+    }
+
+    void release(Pooled!T item) shared {
+        this.unshared.release(item);
+    }
+
+    /// call on items that errored or cannot be reused for some reason
+    void dispose(Pooled!T item) {
+        atomicFetchSub(allocated, 1);
+        close(item.pointer.item);
+        ready.trigger();
+    }
+
+    void dispose(Pooled!T item) shared {
+        return this.unshared.dispose(item);
+    }
+
+    ~this() {
+        working = false;
+        auto current = pool;
+        while (current != null) {
+            close(current.item);
+            current = current.next;
+        }
+    }
+private:
+    SpinLock lock;
+    shared Event ready;
+    PooledEntry!T* pool;
+    shared size_t allocated;
+    size_t size;
+    Duration maxIdle;    
+    T delegate() open;
+    void delegate(ref T) close;
+    shared bool working;
+}
+
+
+/// Create generic pool for resources, open creates new resource, close releases the resource.
+auto pool(T)(size_t size, Duration maxIdle, T delegate() open, void delegate(ref T) close) {
+    return cast(shared)Pool!T(size, maxIdle, open, close);
 }
