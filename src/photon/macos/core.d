@@ -627,6 +627,9 @@ if (allSatisfy!(isAwaitable, Awaitable)) {
 public void startloop()
 {
     int threads = cast(int)sysconf(_SC_NPROCESSORS_ONLN).checked;
+    debug(photon_single) {
+        threads = 1;
+    }
     kq = kqueue();
     enforce(kq != -1);
     ssize_t fdMax = sysconf(_SC_OPEN_MAX).checked;

@@ -576,6 +576,9 @@ public void startloop()
 {
     import core.cpuid;
     uint threads = threadsPerCPU;
+    debug(photon_single) {
+        threads = 1;
+    }
 
     event_loop_fd = cast(int)epoll_create1(0).checked("ERROR: Failed to create event-loop!");
     // use RT signals, disable default termination on signal received

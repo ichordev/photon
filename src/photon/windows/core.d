@@ -317,6 +317,9 @@ public void startloop() {
     GetSystemInfo(&info);
     // TODO: handle NUMA case
     uint threads = info.dwNumberOfProcessors;
+    debug(photon_single) {
+        threads = 1;
+    }
     scheds = new SchedulerBlock[threads];
     foreach(ref sched; scheds) {
         sched.queue = IntrusiveQueue!(FiberExt, RawEvent)(RawEvent(0));
