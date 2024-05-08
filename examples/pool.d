@@ -32,7 +32,7 @@ void main() {
         go({
             delay(1.seconds);
             counts.release(first);
-            assert(closed == 0);
+            writeln("closed:", closed);
         });
         auto third = counts.acquire();
         writeln("acquire:", third);
@@ -46,6 +46,8 @@ void main() {
         writeln("closed: ", 3);
         auto fifth = counts.acquire();
         writeln("acquire: ", fifth);
+        counts.shutdown();
+        writeln("after shutdown");
     });
     runFibers();
 }

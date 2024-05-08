@@ -290,7 +290,7 @@ struct Pooled(T) {
 }
 
 /// Generic pool
-struct Pool(T) {
+class Pool(T) {
     import std.datetime, photon.ds.common;
     private this(size_t size, Duration maxIdle, T delegate() open, void delegate(ref T) close) {
         this.size = size;
@@ -393,13 +393,17 @@ struct Pool(T) {
         return this.unshared.dispose(item);
     }
 
-    ~this() {
+    void shutdown() {
         working = false;
         auto current = pool;
         while (current != null) {
             close(current.item);
             current = current.next;
         }
+    }
+
+    void shutdown() shared {
+        return this.unshared.shutdown();
     }
 private:
     SpinLock lock;
@@ -416,5 +420,5 @@ private:
 
 /// Create generic pool for resources, open creates new resource, close releases the resource.
 auto pool(T)(size_t size, Duration maxIdle, T delegate() open, void delegate(ref T) close) {
-    return cast(shared)Pool!T(size, maxIdle, open, close);
+    return cast(shared) new Pool!T(size, maxIdle, open, close);
 }

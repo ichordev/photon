@@ -17,6 +17,11 @@ if (!is(T : U*, U)) {
      return *cast(T*)&value;
 }
 
+T unshared(T)(shared T value) 
+if (is(T == class)){
+	return *cast(T*)&value;
+}
+
 ref T* unshared(T)(ref shared(T)* value) {
      return *cast(T**)&value;
 }
