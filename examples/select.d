@@ -7,7 +7,7 @@
 	"dependencies": {
 		"photon": { "path": ".." }
 	},
-	"description": "A test for select over channels API",
+    "description": "A test for select over channels API",
 	"license": "BOOST",
 	"name": "select"
 }

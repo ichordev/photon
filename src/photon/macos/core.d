@@ -592,7 +592,7 @@ if (allSatisfy!(isAwaitable, Awaitable)) {
     do {
         resp = poll(fds, cast(nfds_t)args.length, -1); 
     } while (resp < 0 && errno == EINTR);
-    foreach (idx, ref arg; args) {
+    foreach (idx, ref arg; args[0..args.length]) {
         auto fd = fds[idx];
         if (fd.revents & POLL_IN) {
             arg.reset();
@@ -614,7 +614,7 @@ if (allSatisfy!(isAwaitable, Awaitable)) {
     do {
         resp = poll(fds, cast(nfds_t)args.length, -1); 
     } while (resp < 0 && errno == EINTR);
-    foreach (idx, ref arg; args) {
+    foreach (idx, ref arg; args[0..args.length]) {
         auto fd = fds[idx];
         if (fd.revents & POLL_IN) {
             arg.reset();
@@ -989,7 +989,7 @@ extern(C) private ssize_t poll(pollfd *fds, nfds_t nfds, int timeout)
             ssize_t j = 0;
             foreach (i; 0..nfds) {
                 if (fds[i].revents) {
-                    fds[j++] = fds[i];
+                    j++;
                 }
             }
             logf("Using our own event cache: %d events", j);

@@ -983,7 +983,7 @@ extern(C) private ssize_t poll(pollfd *fds, nfds_t nfds, int timeout)
             ssize_t j = 0;
             foreach (i; 0..nfds) {
                 if (fds[i].revents) {
-                    fds[j++] = fds[i];
+                    j++;
                 }
             }
             logf("Using our own event cache: %d events", j);
