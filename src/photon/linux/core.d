@@ -611,7 +611,7 @@ public void startloop()
     foreach(ref sched; scheds) {
         sched.queue = IntrusiveQueue!(FiberExt, RawEvent)(RawEvent(0));
     }
-    eventLoop = pthread_create(cast(pthread_t*)&eventLoop, null, &processEventsEntry, null);
+    checked(pthread_create(cast(pthread_t*)&eventLoop, null, &processEventsEntry, null), "failed to start eventloop");
 }
 
 package(photon) void stoploop()
