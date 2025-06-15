@@ -417,6 +417,10 @@
         white-space: pre-wrap;
       }
 
+      .ddoc .code_lines pre {
+        display: contents;
+      }
+
       .ddoc .code_lines li:only-of-type::before {
         color: rgba(255, 255, 255, 1);
         content: " ";
@@ -529,67 +533,53 @@
   <div class="code_sample">
     <div class="dlang">
       <ol class="code_lines">
-        <li><code class="code">/+ dub.json:
-    {
-    "authors": [
-        "Dmitry Olshansky"
-    ],
-    "copyright": "Copyright © 2024, Dmitry Olshansky",
-    "dependencies": {
-        "photon": { "path": ".." }
-    },
-    "description": "A test for channels API",
-    "license": "BOOST",
-    "name": "channels"
-}
-/
-module examples.channels;
+        <li><pre><code class="code"><span class="keyword">module</span> examples.channels;
 
-import std.algorithm, std.datetime, std.range, std.stdio;
-import photon;
+<span class="keyword">import</span> std.algorithm, std.datetime, std.range, std.stdio;
+<span class="keyword">import</span> <span class="psymbol">photon</span>;
 
-void first(shared Channel!string work, shared Channel!int completion) {
+<span class="keyword">void</span> first(<span class="keyword">shared</span> Channel!string work, <span class="keyword">shared</span> Channel!<span class="keyword">int</span> completion) {
     delay(2.msecs);
-    work.put("first #1");
+    work.put(<span class="string_literal">"first #1"</span>);
     delay(2.msecs);
-    work.put("first #2");
+    work.put(<span class="string_literal">"first #2"</span>);
     delay(2.msecs);
-    work.put("first #3");
+    work.put(<span class="string_literal">"first #3"</span>);
     completion.put(1);
 }
 
-void second(shared Channel!string work, shared Channel!int completion) {
+<span class="keyword">void</span> second(<span class="keyword">shared</span> Channel!string work, <span class="keyword">shared</span> Channel!<span class="keyword">int</span> completion) {
     delay(3.msecs);
-    work.put("second #1");
+    work.put(<span class="string_literal">"second #1"</span>);
     delay(3.msecs);
-    work.put("second #2");
+    work.put(<span class="string_literal">"second #2"</span>);
     completion.put(2);
 }
 
-void main() {
+<span class="keyword">void</span> main() {
     startloop();
-    auto jobQueue = channel!string(2);
-    auto finishQueue = channel!int(1);
+    <span class="keyword">auto</span> jobQueue = channel!string(2);
+    <span class="keyword">auto</span> finishQueue = channel!<span class="keyword">int</span>(1);
     go({
         first(jobQueue, finishQueue);
     });
-    go({ // producer # 2
-        second(jobQueue, finishQueue);
+    go({ <span class="comment">// producer # 2
+</span>        second(jobQueue, finishQueue);
     });
-    go({ // consumer
-        foreach (item; jobQueue) {
+    go({ <span class="comment">// consumer
+</span>        <span class="keyword">foreach</span> (item; jobQueue) {
             delay(1.seconds);
             writeln(item);
         }
     });
-    go({ // closer
-        auto completions = finishQueue.take(2).array;
-        assert(completions.length == 2);
-        jobQueue.close(); // all producers are done
-    });
+    go({ <span class="comment">// closer
+</span>        <span class="keyword">auto</span> completions = finishQueue.take(2).array;
+        <span class="keyword">assert</span>(completions.length == 2);
+        jobQueue.close(); <span class="comment">// all producers are done
+</span>    });
     runFibers();
 }
-</code></li>
+</code></pre></li>
       </ol>
     </div>
   </div>
@@ -661,6 +651,41 @@ void <code class="code">go</code>(void function() <code class="code">func</code>
   <div class="ddoc_summary">
   <p class="para">
     Setup a fiber task to run on the Photon scheduler.
+  </p>
+</div>
+
+</section>
+
+</div>
+
+</li><li class="ddoc_member">
+  <div class="ddoc_member_header">
+  <div class="ddoc_header_anchor">
+  <a href="#goOnSameThread" id="goOnSameThread"><code class="code">goOnSameThread</code></a>
+</div>
+</div><div class="ddoc_decl">
+  <section class="section">
+    <div class="declaration">
+      <h4>Declaration</h4>
+      <div class="dlang">
+        <p class="para">
+          <code class="code">
+            <span class="ddoc_anchor" id="goOnSameThread"></span>void <code class="code">goOnSameThread</code>(void delegate() <code class="code">func</code>);
+<br>
+void <code class="code">goOnSameThread</code>(void function() <code class="code">func</code>);
+
+          </code>
+        </p>
+      </div>
+    </div>
+  </section>
+</div>
+<div class="ddoc_decl">
+  <section class="section ddoc_sections">
+  <div class="ddoc_summary">
+  <p class="para">
+    Same as go but make sure the fiber is scheduled on the same thread of the threadpool.
+Could be useful if there is a need to propagate TLS variable.
   </p>
 </div>
 
@@ -956,6 +981,137 @@ void <code class="code">go</code>(void function() <code class="code">func</code>
   <div class="ddoc_summary">
   <p class="para">
     Trait for testing if a type is Channel
+  </p>
+</div>
+
+</section>
+
+</div>
+
+</li><li class="ddoc_member">
+  <div class="ddoc_member_header">
+  <div class="ddoc_header_anchor">
+  <a href="#Pool" id="Pool"><code class="code">Pool</code></a>
+</div>
+</div><div class="ddoc_decl">
+  <section class="section">
+    <div class="declaration">
+      <h4>Declaration</h4>
+      <div class="dlang">
+        <p class="para">
+          <code class="code">
+            <span class="ddoc_anchor" id="Pool"></span>class <code class="code">Pool</code>(T);
+
+          </code>
+        </p>
+      </div>
+    </div>
+  </section>
+</div>
+<div class="ddoc_decl">
+  <section class="section ddoc_sections">
+  <div class="ddoc_summary">
+  <p class="para">
+    Generic pool
+  </p>
+</div>
+
+</section>
+<ul class="ddoc_members">
+  <li class="ddoc_member">
+  <div class="ddoc_member_header">
+  <div class="ddoc_header_anchor">
+  <a href="#Pool.release" id="Pool.release"><code class="code">release</code></a>
+</div>
+</div><div class="ddoc_decl">
+  <section class="section">
+    <div class="declaration">
+      <h4>Declaration</h4>
+      <div class="dlang">
+        <p class="para">
+          <code class="code">
+            <span class="ddoc_anchor" id="Pool.release"></span>void <code class="code">release</code>(Pooled!T <code class="code">item</code>);
+
+          </code>
+        </p>
+      </div>
+    </div>
+  </section>
+</div>
+<div class="ddoc_decl">
+  <section class="section ddoc_sections">
+  <div class="ddoc_summary">
+  <p class="para">
+    Put pooled <code class="code">item</code> to reuse
+  </p>
+</div>
+
+</section>
+
+</div>
+
+</li><li class="ddoc_member">
+  <div class="ddoc_member_header">
+  <div class="ddoc_header_anchor">
+  <a href="#Pool.dispose" id="Pool.dispose"><code class="code">dispose</code></a>
+</div>
+</div><div class="ddoc_decl">
+  <section class="section">
+    <div class="declaration">
+      <h4>Declaration</h4>
+      <div class="dlang">
+        <p class="para">
+          <code class="code">
+            <span class="ddoc_anchor" id="Pool.dispose"></span>void <code class="code">dispose</code>(Pooled!T <code class="code">item</code>);
+
+          </code>
+        </p>
+      </div>
+    </div>
+  </section>
+</div>
+<div class="ddoc_decl">
+  <section class="section ddoc_sections">
+  <div class="ddoc_summary">
+  <p class="para">
+    call on items that errored or cannot be reused for some reason
+  </p>
+</div>
+
+</section>
+
+</div>
+
+</li>
+</ul>
+
+</div>
+
+</li><li class="ddoc_member">
+  <div class="ddoc_member_header">
+  <div class="ddoc_header_anchor">
+  <a href="#pool" id="pool"><code class="code">pool</code></a>
+</div>
+</div><div class="ddoc_decl">
+  <section class="section">
+    <div class="declaration">
+      <h4>Declaration</h4>
+      <div class="dlang">
+        <p class="para">
+          <code class="code">
+            <span class="ddoc_anchor" id="pool"></span>auto <code class="code">pool</code>(T)(size_t <code class="code">size</code>, Duration <code class="code">maxIdle</code>, T delegate() <code class="code">open</code>, void delegate(ref T) <code class="code">close</code>);
+
+          </code>
+        </p>
+      </div>
+    </div>
+  </section>
+</div>
+<div class="ddoc_decl">
+  <section class="section ddoc_sections">
+  <div class="ddoc_summary">
+  <p class="para">
+    Create generic <code class="code">pool</code> for resources, <code class="code">open</code> creates new resource, <code class="code">close</code> releases the resource.
   </p>
 </div>
 
