@@ -242,7 +242,7 @@ package(photon) void schedulerEntry(size_t n)
                 try {
                     f.call();
                 }
-                catch (Exception e) {
+                catch (Throwable e) {
                     stderr.writeln(e);
                     atomicOp!"-="(alive, 1);
                 }

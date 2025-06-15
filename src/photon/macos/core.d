@@ -381,7 +381,7 @@ package(photon) void schedulerEntry(size_t n)
                 try {
                     f.call();
                 }
-                catch (Exception e) {
+                catch (Throwable e) {
                     stderr.writeln(e);
                     atomicOp!"-="(alive, 1);
                 }
@@ -418,6 +418,21 @@ public void go(void delegate() func) {
         if (loadA < loadB) choice = a;
         else choice = b;
     }
+    atomicOp!"+="(scheds[choice].assigned, 1);
+    atomicOp!"+="(alive, 1);
+    auto f = new FiberExt(func, choice);
+    logf("Assigned %x -> %d / %d scheduler", cast(void*)f, choice, scheds.length);
+    f.schedule();
+}
+
+/// Convenience overload for goOnSameThread that accepts functions 
+public void goOnSameThread(void function() func) {
+    goOnSameThread({ func(); });
+}
+
+///
+public void goOnSameThread(void delegate() func) {
+    auto choice = currentFiber !is null ? currentFiber.numScheduler : 0;
     atomicOp!"+="(scheds[choice].assigned, 1);
     atomicOp!"+="(alive, 1);
     auto f = new FiberExt(func, choice);
