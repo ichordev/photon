@@ -430,7 +430,8 @@ public void goOnSameThread(void function() func) {
     goOnSameThread({ func(); });
 }
 
-///
+/// Same as go but make sure the fiber is scheduled on the same thread of the threadpool.
+/// Could be useful if there is a need to propagate TLS variable.
 public void goOnSameThread(void delegate() func) {
     auto choice = currentFiber !is null ? currentFiber.numScheduler : 0;
     atomicOp!"+="(scheds[choice].assigned, 1);
