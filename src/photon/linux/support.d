@@ -22,17 +22,6 @@ T checked(T: ssize_t)(T value, const char* msg="unknown place") nothrow {
     return value;
 }
 
-ssize_t withErrorno(ssize_t resp) nothrow {
-    if(resp < 0) {
-        //logf("Syscall ret %d", resp);
-        errno = cast(int)-resp;
-        return -1;
-    }
-    else {
-        return resp;
-    }
-}
-
 void logf(string file = __FILE__, int line = __LINE__, T...)(string msg, T args)
 {
     debug(photon) {

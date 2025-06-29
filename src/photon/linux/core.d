@@ -36,6 +36,12 @@ import photon.linux.syscalls;
 import photon.ds.common;
 import photon.ds.intrusive_queue;
 
+immutable size_t pageSize;
+
+shared static this() {
+    pageSize = sysconf(_SC_PAGESIZE);
+}
+
 shared struct RawEvent {
 nothrow:
     this(int init) {
@@ -274,8 +280,6 @@ class FiberExt : Fiber {
     FiberExt next;
     uint numScheduler;
     int wakeFd; // recieves fd that woken us up
-
-    enum PAGESIZE = 4096;
     
     this(void function() fn, uint numSched) nothrow {
         super(fn);
@@ -337,7 +341,7 @@ if (allSatisfy!(isAwaitable, Awaitable)) {
         fds[i].fd = arg.fd;
         fds[i].events = POLL_IN;
     }
-    int resp;
+    ssize_t resp;
     do {
         resp = poll(fds, args.length, -1); 
     } while (resp < 0 && errno == EINTR);
@@ -574,6 +578,8 @@ nothrow:
     }
 }
 
+pragma(msg, "Size", Descriptor.sizeof);
+
 extern(C) void graceful_shutdown_on_signal(int, siginfo_t*, void*)
 {
     version(photon_tracing) printStats();
@@ -622,7 +628,10 @@ public void startloop()
     }
 
     ssize_t fdMax = sysconf(_SC_OPEN_MAX).checked;
-    descriptors = (cast(shared(Descriptor*)) mmap(null, fdMax * Descriptor.sizeof, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0))[0..fdMax];
+    fdMax = fdMax > 2^^24 ? 2^^24 : fdMax;
+    ssize_t size = ((fdMax * Descriptor.sizeof) + pageSize-1) & ~(pageSize-1);
+    descriptors = (cast(shared(Descriptor*)) mmap(null, size, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0))[0..fdMax];
+    checked(cast(ssize_t)descriptors.ptr, "mmap failed");
     scheds = new SchedulerBlock[threads];
     foreach(ref sched; scheds) {
         sched.queue = IntrusiveQueue!(FiberExt, RawEvent)(RawEvent(0));
@@ -770,7 +779,7 @@ ssize_t universalSyscall(size_t ident, string name, SyscallKind kind, Fcntl fcnt
                         (int fd, T args) nothrow {
     if (currentFiber is null) {
         logf("%s PASSTHROUGH FD=%s", name, fd);
-        return syscall(ident, fd, args).withErrorno;
+        return syscall(ident, fd, args);
     }
     else {
         logf("HOOKED %s FD=%d", name, fd);
@@ -779,7 +788,7 @@ ssize_t universalSyscall(size_t ident, string name, SyscallKind kind, Fcntl fcnt
         if (atomicLoad(descriptor.state) == DescriptorState.THREADPOOL) {
             logf("%s syscall THREADPOLL FD=%d", name, fd);
             //TODO: offload syscall to thread-pool
-            return syscall(ident, fd, args).withErrorno;
+            return syscall(ident, fd, args);
         }
     L_start:
         shared AwaitingFiber await = AwaitingFiber(cast(shared)currentFiber, null);
@@ -831,7 +840,7 @@ ssize_t universalSyscall(size_t ident, string name, SyscallKind kind, Fcntl fcnt
                 }
                 else
                     static assert(0);
-                return withErrorno(resp);
+                return resp;
             }
         }
         else static if(kind == SyscallKind.write || kind == SyscallKind.connect) {
@@ -865,7 +874,7 @@ ssize_t universalSyscall(size_t ident, string name, SyscallKind kind, Fcntl fcnt
                         }
                         goto L_start; // became UNCERTAIN or READY in meantime
                     }
-                    return withErrorno(resp);
+                    return resp;
                 }
                 else {
                     if (resp == args[1]) // (buf, len) args to syscall
@@ -881,7 +890,7 @@ ssize_t universalSyscall(size_t ident, string name, SyscallKind kind, Fcntl fcnt
                         }
                         goto L_start; // became UNCERTAIN or READY in meantime
                     }
-                    return withErrorno(resp);
+                    return resp;
                 }
             }
         }
@@ -1016,7 +1025,10 @@ extern(C) private ssize_t poll(pollfd *fds, nfds_t nfds, int timeout)
     }
     else {
         logf("HOOKED POLL %d fds timeout %d", nfds, timeout);
-        if (nfds < 0) return -EINVAL.withErrorno;
+        if (nfds < 0) {
+            errno = EINVAL;
+            return -1;
+        }
         if (nfds == 0) {
             if (timeout == 0) return 0;
             shared AwaitingFiber aw = shared(AwaitingFiber)(cast(shared)currentFiber);
@@ -1030,7 +1042,10 @@ extern(C) private ssize_t poll(pollfd *fds, nfds_t nfds, int timeout)
             return 0;
         }
         foreach(ref fd; fds[0..nfds]) {
-            if (fd.fd < 0 || fd.fd >= descriptors.length) return -EBADF.withErrorno;
+            if (fd.fd < 0 || fd.fd >= descriptors.length) {
+                errno = EBADF;
+                return -1;
+            }
             fd.revents = 0;
         }
         ssize_t result = 0;
@@ -1076,7 +1091,7 @@ extern(C) private ssize_t nanosleep(const timespec* req, const timespec* rem) {
         delay(req);
         return 0;
     } else {
-        return syscall(SYS_NANOSLEEP, cast(size_t)req, cast(size_t)rem).withErrorno;
+        return syscall(SYS_NANOSLEEP, cast(size_t)req, cast(size_t)rem);
     }
 }
 
@@ -1084,5 +1099,5 @@ extern(C) private ssize_t close(int fd) nothrow
 {
     logf("HOOKED CLOSE FD=%d", fd);
     deregisterFd(fd);
-    return cast(int)withErrorno(syscall(SYS_CLOSE, fd));
+    return cast(int)syscall(SYS_CLOSE, fd);
 }

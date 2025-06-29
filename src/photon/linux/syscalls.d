@@ -78,117 +78,23 @@ version (X86) {
         SYS_RECVFROM = 45,
         SYS_NANOSLEEP = 35;
 
-    size_t syscall(size_t ident) nothrow
-    {
-        size_t ret;
-
-        asm nothrow
-        {
-            mov RAX, ident;
-            syscall;
-            mov ret, RAX;
-        }
-        return ret;
-    }
-
-    size_t syscall(size_t ident, size_t n) nothrow
-    {
-        size_t ret;
-
-        asm nothrow
-        {
-            mov RAX, ident;
-            mov RDI, n;
-            syscall;
-            mov ret, RAX;
-        }
-        return ret;
-    }
-
-    size_t syscall(size_t ident, size_t n, size_t arg1) nothrow
-    {
-        size_t ret;
-
-        asm nothrow
-        {
-            mov RAX, ident;
-            mov RDI, n;
-            mov RSI, arg1;
-            syscall;
-            mov ret, RAX;
-        }
-        return ret;
-    }
-
-    size_t syscall(size_t ident, size_t n, size_t arg1, size_t arg2) nothrow
-    {
-        size_t ret;
-
-        asm nothrow
-        {
-            mov RAX, ident;
-            mov RDI, n;
-            mov RSI, arg1;
-            mov RDX, arg2;
-            syscall;
-            mov ret, RAX;
-        }
-        return ret;
-    }
-
-    size_t syscall(size_t ident, size_t n, size_t arg1, size_t arg2, size_t arg3) nothrow
-    {
-        size_t ret;
-
-        asm nothrow
-        {
-            mov RAX, ident;
-            mov RDI, n;
-            mov RSI, arg1;
-            mov RDX, arg2;
-            mov R10, arg3;
-            syscall;
-            mov ret, RAX;
-        }
-        return ret;
-    }
-
-    size_t syscall(size_t ident, size_t n, size_t arg1, size_t arg2, size_t arg3, size_t arg4) nothrow
-    {
-        size_t ret;
-
-        asm nothrow
-        {
-            mov RAX, ident;
-            mov RDI, n;
-            mov RSI, arg1;
-            mov RDX, arg2;
-            mov R10, arg3;
-            mov R8, arg4;
-            syscall;
-            mov ret, RAX;
-        }
-        return ret;
-    }
-
-    size_t syscall(size_t ident, size_t n, size_t arg1, size_t arg2, size_t arg3, size_t arg4, size_t arg5) nothrow
-    {
-        size_t ret;
-
-        asm nothrow
-        {
-            mov RAX, ident;
-            mov RDI, n;
-            mov RSI, arg1;
-            mov RDX, arg2;
-            mov R10, arg3;
-            mov R8, arg4;
-            mov R9, arg5;
-            syscall;
-            mov ret, RAX;
-        }
-        return ret;
-    }
+    extern(C) ssize_t syscall(size_t number, ...);
+} else version(AArch64){
+    enum int
+        SYS_READ = 0x3f,
+        SYS_WRITE = 0x40,
+        SYS_CLOSE = 0x39,
+        SYS_POLL = 0x49,
+        SYS_GETTID = 0xb0,
+        SYS_SOCKETPAIR = 0xc7,
+        SYS_ACCEPT = 0xca,
+        SYS_ACCEPT4 = 0xf2,
+        SYS_CONNECT = 0xcb,
+        SYS_SENDTO = 0xce,
+        SYS_RECVFROM = 0xcf,
+        SYS_NANOSLEEP = 0x65;
+    
+    extern(C) ssize_t syscall(size_t number, ...);
 }
 
 int gettid()
@@ -198,18 +104,18 @@ int gettid()
 
 ssize_t raw_read(int fd, void *buf, size_t count) nothrow {
     logf("Raw read on FD=%d", fd);
-    return syscall(SYS_READ, fd, cast(ssize_t) buf, cast(ssize_t) count).withErrorno;
+    return syscall(SYS_READ, fd, cast(ssize_t) buf, cast(ssize_t) count);
 }
 
 ssize_t raw_write(int fd, const void *buf, size_t count) nothrow
 {
     logf("Raw write on FD=%d", fd);
-    return syscall(SYS_WRITE, fd, cast(size_t) buf, count).withErrorno;
+    return syscall(SYS_WRITE, fd, cast(size_t) buf, count);
 }
 
 ssize_t raw_poll(pollfd *fds, nfds_t nfds, int timeout)
 {
     logf("Raw poll");
-    return syscall(SYS_POLL, cast(size_t)fds, cast(size_t) nfds, timeout).withErrorno;
+    return syscall(SYS_POLL, cast(size_t)fds, cast(size_t) nfds, timeout);
 }
 
