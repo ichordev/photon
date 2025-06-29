@@ -848,7 +848,6 @@ ssize_t universalSyscall(size_t ident, string name, SyscallKind kind, Fcntl fcnt
             }
         }
         else static if(kind == SyscallKind.write || kind == SyscallKind.connect) {
-            //TODO: Handle short-write b/c of EWOULDBLOCK to apear as fully blocking?
             auto state = descriptor.writerState;
             logf("%s syscall state is %d. Fiber %x", name, state, cast(void*)currentFiber);
             final switch (state) with (WriterState) {

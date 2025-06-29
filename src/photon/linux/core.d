@@ -578,7 +578,6 @@ nothrow:
     }
 }
 
-pragma(msg, "Size", Descriptor.sizeof);
 
 extern(C) void graceful_shutdown_on_signal(int, siginfo_t*, void*)
 {
@@ -821,7 +820,7 @@ ssize_t universalSyscall(size_t ident, string name, SyscallKind kind, Fcntl fcnt
                 static if (kind == SyscallKind.accept) {
                     if (resp >= 0) // for accept we never know if we emptied the queue
                         descriptor.changeReader(READING, UNCERTAIN);
-                    else if (resp == -ERR || resp == -EAGAIN) {
+                    else if (errno == ERR || errno == EAGAIN) {
                         if (descriptor.changeReader(READING, EMPTY))
                             goto case EMPTY;
                         goto L_start; // became UNCERTAIN or READY in meantime
@@ -832,7 +831,7 @@ ssize_t universalSyscall(size_t ident, string name, SyscallKind kind, Fcntl fcnt
                         descriptor.changeReader(READING, UNCERTAIN);
                     else if(resp >= 0)
                         descriptor.changeReader(READING, EMPTY);
-                    else if (resp == -ERR || resp == -EAGAIN) {
+                    else if (errno == ERR || errno == EAGAIN) {
                         if (descriptor.changeReader(READING, EMPTY))
                             goto case EMPTY;
                         goto L_start; // became UNCERTAIN or READY in meantime
@@ -844,7 +843,6 @@ ssize_t universalSyscall(size_t ident, string name, SyscallKind kind, Fcntl fcnt
             }
         }
         else static if(kind == SyscallKind.write || kind == SyscallKind.connect) {
-            //TODO: Handle short-write b/c of EWOULDBLOCK to apear as fully blocking?
             auto state = descriptor.writerState;
             logf("%s syscall state is %d. Fiber %x", name, state, cast(void*)currentFiber);
             final switch (state) with (WriterState) {
@@ -868,7 +866,7 @@ ssize_t universalSyscall(size_t ident, string name, SyscallKind kind, Fcntl fcnt
                     if(resp >= 0) {
                         descriptor.changeWriter(WRITING, READY);
                     }
-                    else if (resp == -ERR || resp == -EALREADY) {
+                    else if (errno == ERR || errno == EALREADY) {
                         if (descriptor.changeWriter(WRITING, FULL)) {
                             goto case FULL;
                         }
@@ -883,7 +881,7 @@ ssize_t universalSyscall(size_t ident, string name, SyscallKind kind, Fcntl fcnt
                         logf("Short-write on FD=%d, become FULL", fd);
                         descriptor.changeWriter(WRITING, FULL);
                     }
-                    else if (resp == -ERR || resp == -EAGAIN) {
+                    else if (errno == ERR || errno == EAGAIN) {
                         if (descriptor.changeWriter(WRITING, FULL)) {
                             logf("Sudden block on FD=%d, become FULL", fd);
                             goto case FULL;
