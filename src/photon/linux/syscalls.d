@@ -68,7 +68,7 @@ version (X86) {
         SYS_READ = 0x0,
         SYS_WRITE = 0x1,
         SYS_CLOSE = 3,
-        SYS_POLL = 7,
+        SYS_PPOLL = 271,
         SYS_GETTID = 186,
         SYS_SOCKETPAIR = 0x35,
         SYS_ACCEPT = 0x2b,
@@ -84,7 +84,7 @@ version (X86) {
         SYS_READ = 0x3f,
         SYS_WRITE = 0x40,
         SYS_CLOSE = 0x39,
-        SYS_POLL = 0x49,
+        SYS_PPOLL = 0x49,
         SYS_GETTID = 0xb0,
         SYS_SOCKETPAIR = 0xc7,
         SYS_ACCEPT = 0xca,
@@ -116,6 +116,9 @@ ssize_t raw_write(int fd, const void *buf, size_t count) nothrow
 ssize_t raw_poll(pollfd *fds, nfds_t nfds, int timeout)
 {
     logf("Raw poll");
-    return syscall(SYS_POLL, cast(size_t)fds, cast(size_t) nfds, timeout);
+    timespec ts;
+    ts.tv_sec = timeout/1000;
+    ts.tv_nsec = (timeout % 1000) * 1000000;
+    return syscall(SYS_PPOLL, cast(size_t)fds, cast(size_t) nfds, &ts, null);
 }
 
