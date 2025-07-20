@@ -97,10 +97,7 @@ version (X86) {
     extern(C) ssize_t syscall(size_t number, ...);
 }
 
-int gettid()
-{
-    return cast(int)syscall(SYS_GETTID);
-}
+extern(C) int gettid();
 
 ssize_t raw_read(int fd, void *buf, size_t count) nothrow {
     logf("Raw read on FD=%d", fd);

@@ -73,6 +73,17 @@ private // helpers
 
         return 0;
     }
+
+    cpu_mask __CPU_GET_S()(size_t cpu, size_t setsize, cpu_set_t* cpusetp) pure
+    {
+        if (cpu < 8 * setsize)
+        {
+            if (cpusetp.__bits[__CPUELT(cpu)] & __CPUMASK(cpu))
+                return __CPUMASK(cpu);
+        }
+
+        return 0;
+    }
 }
 
 /// Type for array elements in 'cpu_set_t'.
@@ -89,6 +100,11 @@ struct cpu_set_t
 cpu_mask CPU_SET()(size_t cpu, cpu_set_t* cpusetp) pure
 {
      return __CPU_SET_S(cpu, cpu_set_t.sizeof, cpusetp);
+}
+
+cpu_mask CPU_GET()(size_t cpu, cpu_set_t* cpusetp) pure 
+{
+    return __CPU_GET_S(cpu, cpu_set_t.sizeof, cpusetp);
 }
 
 /* Functions */
