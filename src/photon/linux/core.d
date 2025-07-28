@@ -434,7 +434,7 @@ package(photon) void schedulerEntry(size_t n)
                     f = next;
                 } while(f !is null);
             }
-            processEventsEntry(null);
+            processEventsEntry();
         }
     }
     termination.trigger();
