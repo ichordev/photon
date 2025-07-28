@@ -679,7 +679,7 @@ void processEventsEntry()
         int fd = events[n].data.fd;
         if (fd == termination.fd) {
             foreach(ref s; scheds) s.queue.event.trigger();
-            return null;
+            return;
         }
         else if (fd == signal_loop_fd) {
             logf("Intercepted our aio SIGNAL");
