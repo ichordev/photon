@@ -253,7 +253,7 @@ struct AwaitingFiber {
     shared FiberExt fiber;
     AwaitingFiber* next;
 
-    void scheduleAll(int wakeFd) nothrow
+    void scheduleAll(int wakeFd, size_t from) nothrow
     {
         auto w = &this;
         FiberExt head;
@@ -270,7 +270,7 @@ struct AwaitingFiber {
             logf("Waking with FD=%d", wakeFd);
             head.wakeFd = wakeFd;
             auto next = head.next; // schedule uses .next pointer
-            head.schedule();
+            head.schedule(from);
             head = next;
         }
     }
@@ -291,9 +291,12 @@ class FiberExt : Fiber {
         numScheduler = numSched;
     }
 
-    void schedule() nothrow
+    void schedule(size_t from) nothrow
     {
         scheds[numScheduler].queue.push(this);
+        if (from != numScheduler) {
+            scheds[numScheduler].queue.event.trigger();
+        }
     }
 }
 
@@ -413,10 +416,12 @@ package(photon) void schedulerEntry(size_t n)
             catch (Throwable e) {
                 stderr.writeln(e);
                 atomicOp!"-="(alive, 1);
+                if (alive == 0) termination.trigger();
             }
             if (f.state == FiberExt.State.TERM) {
                 logf("Fiber %s terminated", cast(void*)f);
                 atomicOp!"-="(alive, 1);
+                if (alive == 0) termination.trigger();
             }
             f = next;
         }
@@ -450,7 +455,7 @@ public void go(void delegate() func) {
     atomicOp!"+="(alive, 1);
     auto f = new FiberExt(func, choice);
     logf("Assigned %x -> %d scheduler", cast(void*)f, choice);
-    f.schedule();
+    f.schedule(choice);
     scheds[choice].queue.event.trigger();
 }
 
@@ -467,7 +472,8 @@ public void goOnSameThread(void delegate() func) {
     atomicOp!"+="(alive, 1);
     auto f = new FiberExt(func, choice);
     logf("Assigned %x -> %d / %d scheduler", cast(void*)f, choice, scheds.length);
-    f.schedule();
+    f.schedule(choice);
+    scheds[choice].queue.event.trigger();
 }
 
 shared Descriptor[] descriptors;
@@ -564,15 +570,15 @@ nothrow:
     }
 
     // try to schedule readers - if fails - someone added a reader, it's now his job to check state
-    void scheduleReaders()(int wakeFd) {
+    void scheduleReaders()(int wakeFd, size_t from) {
         auto w = steal(_readerWaits);
-        if (w) w.unshared.scheduleAll(wakeFd);
+        if (w) w.unshared.scheduleAll(wakeFd, from);
     }
 
     // try to schedule writers, ditto
-    void scheduleWriters()(int wakeFd) {
+    void scheduleWriters()(int wakeFd, size_t from) {
         auto w = steal(_writerWaits);
-        if (w) w.unshared.scheduleAll(wakeFd);
+        if (w) w.unshared.scheduleAll(wakeFd, from);
     }
 }
 
@@ -648,14 +654,6 @@ public void startloop()
         sigaction(SIGTERM, &action, null).checked;
     }
 
-    
-    //checked(pthread_create(cast(pthread_t*)&eventLoop, null, &processEventsEntry, null), "failed to start eventloop");
-}
-
-package(photon) void stoploop()
-{
-    void* ret;
-    //pthread_join(eventLoop, &ret);
 }
 
 void processEventsEntry(size_t numSched)
@@ -690,7 +688,7 @@ void processEventsEntry(size_t numSched)
                 if (fdsi[i].ssi_signo == SIGNAL) {
                     logf("HIT our SIGNAL");
                     auto fiber = cast(FiberExt)cast(void*)fdsi[i].ssi_ptr;
-                    fiber.schedule();
+                    fiber.schedule(numSched);
                 }
             }
         }
@@ -705,22 +703,22 @@ void processEventsEntry(size_t numSched)
                         case EMPTY:
                             logf("Trying to schedule readers");
                             descriptor.changeReader(EMPTY, READY);
-                            descriptor.scheduleReaders(fd);
+                            descriptor.scheduleReaders(fd, numSched);
                             logf("Scheduled readers");
                             break;
                         case UNCERTAIN:
                             descriptor.changeReader(UNCERTAIN, READY);
-                            descriptor.scheduleReaders(fd);
+                            descriptor.scheduleReaders(fd, numSched);
                             logf("Scheduled readers");
                             break;
                         case READING:
                             if (!descriptor.changeReader(READING, UNCERTAIN)) {
                                 if (descriptor.changeReader(EMPTY, UNCERTAIN)) // if became empty - move to UNCERTAIN and wake readers
-                                    descriptor.scheduleReaders(fd);
+                                    descriptor.scheduleReaders(fd, numSched);
                             }
                             break;
                         case READY:
-                            descriptor.scheduleReaders(fd);
+                            descriptor.scheduleReaders(fd, numSched);
                             break;
                     }
                     logf("Awaits %x", cast(void*)descriptor.readWaiters);
@@ -732,20 +730,20 @@ void processEventsEntry(size_t numSched)
                     final switch(state) with(WriterState) { 
                         case FULL:
                             descriptor.changeWriter(FULL, READY);
-                            descriptor.scheduleWriters(fd);
+                            descriptor.scheduleWriters(fd, numSched);
                             break;
                         case UNCERTAIN:
                             descriptor.changeWriter(UNCERTAIN, READY);
-                            descriptor.scheduleWriters(fd);
+                            descriptor.scheduleWriters(fd, numSched);
                             break;
                         case WRITING:
                             if (!descriptor.changeWriter(WRITING, UNCERTAIN)) {
                                 if (descriptor.changeWriter(FULL, UNCERTAIN)) // if became empty - move to UNCERTAIN and wake writers
-                                    descriptor.scheduleWriters(fd);
+                                    descriptor.scheduleWriters(fd, numSched);
                             }
                             break;
                         case READY:
-                            descriptor.scheduleWriters(fd);
+                            descriptor.scheduleWriters(fd, numSched);
                             break;
                     }
                     logf("Awaits %x", cast(void*)descriptor.writeWaiters);
@@ -772,7 +770,8 @@ void interceptFd(Fcntl needsFcntl)(int fd) nothrow {
         epoll_event event;
         event.events = EPOLLIN | EPOLLOUT | EPOLLET;
         event.data.fd = fd;
-        if (epoll_ctl(scheds[currentFiber.numScheduler].event_loop_fd, EPOLL_CTL_ADD, fd, &event) < 0 && errno == EPERM) {
+        size_t n = currentFiber !is null ? currentFiber.numScheduler : 0;
+        if (epoll_ctl(scheds[n].event_loop_fd, EPOLL_CTL_ADD, fd, &event) < 0 && errno == EPERM) {
             logf("isSocket = false FD = %s", fd);
             descriptors[fd].state = DescriptorState.THREADPOOL;
         }
@@ -788,8 +787,9 @@ void deregisterFd(int fd) nothrow {
         auto descriptor = descriptors.ptr + fd;
         atomicStore(descriptor._writerState, WriterState.READY);
         atomicStore(descriptor._readerState, ReaderState.EMPTY);
-        descriptor.scheduleReaders(fd);
-        descriptor.scheduleWriters(fd);
+        size_t choice = currentFiber !is null ? currentFiber.numScheduler : -1;
+        descriptor.scheduleReaders(fd, choice);
+        descriptor.scheduleWriters(fd, choice);
         atomicStore(descriptor.state, DescriptorState.NOT_INITED);
     }
 }
@@ -826,7 +826,7 @@ ssize_t universalSyscall(size_t ident, string name, SyscallKind kind, Fcntl fcnt
                 logf("EMPTY - enqueue reader");
                 if (!descriptor.enqueueReader(&await)) goto L_start;
                 // changed state to e.g. READY or UNCERTAIN in meantime, may need to reschedule
-                if (descriptor.readerState != EMPTY) descriptor.scheduleReaders(fd);
+                if (descriptor.readerState != EMPTY) descriptor.scheduleReaders(fd, currentFiber.numScheduler);
                 FiberExt.yield();
                 goto L_start;
             case UNCERTAIN:
@@ -870,7 +870,7 @@ ssize_t universalSyscall(size_t ident, string name, SyscallKind kind, Fcntl fcnt
                 logf("FULL FD=%d Fiber %x", fd, cast(void*)currentFiber);
                 if (!descriptor.enqueueWriter(&await)) goto L_start;
                 // changed state to e.g. READY or UNCERTAIN in meantime, may need to reschedule
-                if (descriptor.writerState != FULL) descriptor.scheduleWriters(fd);
+                if (descriptor.writerState != FULL) descriptor.scheduleWriters(fd, currentFiber.numScheduler);
                 FiberExt.yield();
                 goto L_start;
             case UNCERTAIN:
