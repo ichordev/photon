@@ -381,7 +381,9 @@ if (allSatisfy!(isAwaitable, Awaitable)) {
 struct SchedulerBlock {
     shared IntrusiveQueue!(FiberExt, RawEvent) queue;
     shared uint assigned;
-    size_t[2] padding;
+    int event_loop_fd;
+    int signal_loop_fd;
+    size_t padding;
 }
 static assert(SchedulerBlock.sizeof == 64);
 
@@ -399,43 +401,26 @@ package(photon) void schedulerEntry(size_t n)
         photon.linux.support.perror("sched_setaffinity");
     }
     shared SchedulerBlock* sched = scheds.ptr + n;
-    pollfd[2] fds;
-    fds[0].fd = sched.queue.event.fd;
-    fds[0].events = POLLIN;
-    fds[1].fd = event_loop_fd;
-    fds[1].events = POLLIN;
     while (alive > 0) {
-        //sched.queue.event.waitAndReset();
-        fds[0].revents = 0;
-        fds[1].revents = 0;
-        raw_poll(fds.ptr, 2, 10_000);
-        if (fds[0].revents) {
-            sched.queue.event.waitAndReset();
-        }
-        foreach (_; 0..1000) {
-            for(;;) {
-                FiberExt f = sched.queue.drain();
-                if (f is null) break; // drained an empty queue, time to sleep
-                do {
-                    auto next = f.next; //save next, it will be reused on scheduling
-                    currentFiber = f;
-                    logf("Fiber %x started", cast(void*)f);
-                    try {
-                        f.call();
-                    }
-                    catch (Throwable e) {
-                        stderr.writeln(e);
-                        atomicOp!"-="(alive, 1);
-                    }
-                    if (f.state == FiberExt.State.TERM) {
-                        logf("Fiber %s terminated", cast(void*)f);
-                        atomicOp!"-="(alive, 1);
-                    }
-                    f = next;
-                } while(f !is null);
+        FiberExt f = sched.queue.drain();
+        while(f !is null) {
+            auto next = f.next; //save next, it will be reused on scheduling
+            currentFiber = f;
+            logf("Fiber %x started", cast(void*)f);
+            try {
+                f.call();
             }
-            processEventsEntry();
+            catch (Throwable e) {
+                stderr.writeln(e);
+                atomicOp!"-="(alive, 1);
+            }
+            if (f.state == FiberExt.State.TERM) {
+                logf("Fiber %s terminated", cast(void*)f);
+                atomicOp!"-="(alive, 1);
+            }
+            f = next;
         }
+        processEventsEntry(n);
     }
     termination.trigger();
     foreach (ref s; scheds) {
@@ -466,6 +451,7 @@ public void go(void delegate() func) {
     auto f = new FiberExt(func, choice);
     logf("Assigned %x -> %d scheduler", cast(void*)f, choice);
     f.schedule();
+    scheds[choice].queue.event.trigger();
 }
 
 /// Convenience overload for goOnSameThread that accepts functions 
@@ -485,8 +471,6 @@ public void goOnSameThread(void delegate() func) {
 }
 
 shared Descriptor[] descriptors;
-shared int event_loop_fd;
-shared int signal_loop_fd;
 
 enum ReaderState: uint {
     EMPTY = 0,
@@ -622,31 +606,6 @@ public void startloop()
         threads = 1;
     }
 
-    event_loop_fd = cast(int)epoll_create1(0).checked("ERROR: Failed to create event-loop!");
-    // use RT signals, disable default termination on signal received
-    sigset_t mask;
-    sigemptyset(&mask);
-    sigaddset(&mask, SIGNAL);
-    pthread_sigmask(SIG_BLOCK, &mask, null).checked;
-    signal_loop_fd = cast(int)signalfd(-1, &mask, 0).checked("ERROR: Failed to create signalfd!");
-
-    epoll_event event;
-    event.events = EPOLLIN;
-    event.data.fd = signal_loop_fd;
-    epoll_ctl(event_loop_fd, EPOLL_CTL_ADD, signal_loop_fd, &event).checked;
-
-    termination = RawEvent(0);
-    event.events = EPOLLIN;
-    event.data.fd = termination.fd;
-    epoll_ctl(event_loop_fd, EPOLL_CTL_ADD, termination.fd, &event).checked;
-
-    {
-        
-        sigaction_t action;
-        action.sa_sigaction = &graceful_shutdown_on_signal;
-        sigaction(SIGTERM, &action, null).checked;
-    }
-
     ssize_t fdMax = sysconf(_SC_OPEN_MAX).checked;
     fdMax = fdMax > 2^^24 ? 2^^24 : fdMax;
     ssize_t size = ((fdMax * Descriptor.sizeof) + pageSize-1) & ~(pageSize-1);
@@ -655,7 +614,41 @@ public void startloop()
     scheds = new SchedulerBlock[threads];
     foreach(ref sched; scheds) {
         sched.queue = IntrusiveQueue!(FiberExt, RawEvent)(RawEvent(0));
+        sched.event_loop_fd = cast(int)epoll_create1(0).checked("ERROR: Failed to create event-loop!");
+        // use RT signals, disable default termination on signal received
+        sigset_t mask;
+        sigemptyset(&mask);
+        sigaddset(&mask, SIGNAL);
+        pthread_sigmask(SIG_BLOCK, &mask, null).checked;
+        sched.signal_loop_fd = cast(int)signalfd(-1, &mask, 0).checked("ERROR: Failed to create signalfd!");
+
+        epoll_event event;
+        event.events = EPOLLIN;
+        event.data.fd = sched.signal_loop_fd;
+        epoll_ctl(sched.event_loop_fd, EPOLL_CTL_ADD, sched.signal_loop_fd, &event).checked;
+
+        event.events = EPOLLIN;
+        event.data.fd = sched.queue.event.fd;
+        epoll_ctl(sched.event_loop_fd, EPOLL_CTL_ADD, sched.queue.event.fd, &event).checked;
     }
+
+    
+    termination = RawEvent(0);
+    epoll_event event;
+    event.events = EPOLLIN;
+    event.data.fd = termination.fd;
+    foreach(ref sched; scheds) {
+        epoll_ctl(sched.event_loop_fd, EPOLL_CTL_ADD, termination.fd, &event).checked;
+    }
+
+    {
+        
+        sigaction_t action;
+        action.sa_sigaction = &graceful_shutdown_on_signal;
+        sigaction(SIGTERM, &action, null).checked;
+    }
+
+    
     //checked(pthread_create(cast(pthread_t*)&eventLoop, null, &processEventsEntry, null), "failed to start eventloop");
 }
 
@@ -665,14 +658,15 @@ package(photon) void stoploop()
     //pthread_join(eventLoop, &ret);
 }
 
-void processEventsEntry()
+void processEventsEntry(size_t numSched)
 {
     //for (;;) {
     epoll_event[MAX_EVENTS] events = void;
     signalfd_siginfo[20] fdsi = void;
+    auto sched = &scheds[numSched];
     int r;
     do {
-        r = epoll_wait(event_loop_fd, events.ptr, MAX_EVENTS, 0);
+        r = epoll_wait(sched.event_loop_fd, events.ptr, MAX_EVENTS, -1);
     } while (r < 0 && errno == EINTR);
     checked(r);
     for (int n = 0; n < r; n++) {
@@ -681,9 +675,12 @@ void processEventsEntry()
             foreach(ref s; scheds) s.queue.event.trigger();
             return;
         }
-        else if (fd == signal_loop_fd) {
+        else if (fd == sched.queue.event.fd) {
+            sched.queue.event.waitAndReset();
+        }
+        else if (fd == sched.signal_loop_fd) {
             logf("Intercepted our aio SIGNAL");
-            ssize_t r2 = raw_read(signal_loop_fd, &fdsi, fdsi.sizeof);
+            ssize_t r2 = raw_read(sched.signal_loop_fd, &fdsi, fdsi.sizeof);
             logf("aio events = %d", r2 / signalfd_siginfo.sizeof);
             if (r2 % signalfd_siginfo.sizeof != 0)
                 checked(r2, "ERROR: failed read on signalfd");
@@ -713,6 +710,8 @@ void processEventsEntry()
                             break;
                         case UNCERTAIN:
                             descriptor.changeReader(UNCERTAIN, READY);
+                            descriptor.scheduleReaders(fd);
+                            logf("Scheduled readers");
                             break;
                         case READING:
                             if (!descriptor.changeReader(READING, UNCERTAIN)) {
@@ -737,6 +736,7 @@ void processEventsEntry()
                             break;
                         case UNCERTAIN:
                             descriptor.changeWriter(UNCERTAIN, READY);
+                            descriptor.scheduleWriters(fd);
                             break;
                         case WRITING:
                             if (!descriptor.changeWriter(WRITING, UNCERTAIN)) {
@@ -772,7 +772,7 @@ void interceptFd(Fcntl needsFcntl)(int fd) nothrow {
         epoll_event event;
         event.events = EPOLLIN | EPOLLOUT | EPOLLET;
         event.data.fd = fd;
-        if (epoll_ctl(event_loop_fd, EPOLL_CTL_ADD, fd, &event) < 0 && errno == EPERM) {
+        if (epoll_ctl(scheds[currentFiber.numScheduler].event_loop_fd, EPOLL_CTL_ADD, fd, &event) < 0 && errno == EPERM) {
             logf("isSocket = false FD = %s", fd);
             descriptors[fd].state = DescriptorState.THREADPOOL;
         }
@@ -976,7 +976,7 @@ extern(C) private ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags,
 
 extern(C) private ssize_t poll(pollfd *fds, nfds_t nfds, int timeout)
 {
-    nothrow bool nonBlockingCheck(ref ssize_t result) {
+    nothrow bool nonBlockingCheck(ref ssize_t result, int timeout) {
         bool uncertain;
     L_cacheloop:
         foreach (ref fd; fds[0..nfds]) {
@@ -1016,7 +1016,7 @@ extern(C) private ssize_t poll(pollfd *fds, nfds_t nfds, int timeout)
         if (uncertain) {
             logf("Fallback to system poll, descriptors have uncertain state");
             ssize_t p = raw_poll(fds, nfds, 0);
-            if (p != 0) {
+            if (p != 0 || timeout == 0) {
                 result = p;
                 logf("Raw poll returns %d", result);
                 return true;
@@ -1030,7 +1030,7 @@ extern(C) private ssize_t poll(pollfd *fds, nfds_t nfds, int timeout)
                 }
             }
             logf("Using our own event cache: %d events", j);
-            if (j > 0) {
+            if (j > 0 || timeout == 0) {
                 result = cast(ssize_t)j;
                 return true;
             }
@@ -1067,7 +1067,7 @@ extern(C) private ssize_t poll(pollfd *fds, nfds_t nfds, int timeout)
             fd.revents = 0;
         }
         ssize_t result = 0;
-        if (nonBlockingCheck(result)) return result;
+        if (nonBlockingCheck(result, timeout)) return result;
         shared AwaitingFiber aw = shared(AwaitingFiber)(cast(shared)currentFiber);
         foreach (i; 0..nfds) {
             if (fds[i].events & POLLIN)
@@ -1098,7 +1098,7 @@ extern(C) private ssize_t poll(pollfd *fds, nfds_t nfds, int timeout)
         logf("Woke up after select %x. WakeFD=%d", cast(void*)currentFiber, currentFiber.wakeFd);
         if (currentFiber.wakeFd == timeoutFd) return 0;
         else {
-            nonBlockingCheck(result);
+            nonBlockingCheck(result, 0);
             return result;
         }
     }

@@ -116,6 +116,6 @@ ssize_t raw_poll(pollfd *fds, nfds_t nfds, int timeout)
     timespec ts;
     ts.tv_sec = timeout/1000;
     ts.tv_nsec = (timeout % 1000) * 1000000;
-    return syscall(SYS_PPOLL, cast(size_t)fds, cast(size_t) nfds, &ts, null);
+    return syscall(SYS_PPOLL, cast(size_t)fds, cast(size_t) nfds, timeout < 0 ? null : &ts, null);
 }
 

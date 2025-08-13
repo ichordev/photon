@@ -25,7 +25,7 @@ public:
             bool shouldTrigger = exhausted;
             exhausted = false;
             lock.unlock();
-            if (shouldTrigger) event.trigger();
+            //if (shouldTrigger) event.trigger();
         }
         else {
             tail.next = cast(shared)item;
@@ -61,6 +61,7 @@ public:
         else {
             auto r = head.unshared;
             head = tail = null;
+            exhausted = true;
             lock.unlock();
             return r;
         }
