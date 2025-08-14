@@ -1,10 +1,10 @@
 #!/usr/bin/env dub
 /+ dub.json:
     {
-	    "name" : "hello",
+        "name" : "hello",
         "dependencies": {
-		    "photon": { "path" : "../.." },
-            "photon-http": "~>0.5.2"
+            "photon": { "path" : "../.." },
+            "photon-http": "0.5.5"
         }
     }
 +/
