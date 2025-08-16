@@ -17,27 +17,24 @@ public:
         event = ev;
     }
 
-    void push(T item) {
+    bool push(T item) {
         item.next = null;
         lock.lock();
-        if (tail is null) {
+        bool wasEmpty = tail is null;
+        if (wasEmpty) {
             head = tail = cast(shared)item;
-            bool shouldTrigger = exhausted;
-            exhausted = false;
-            lock.unlock();
-            if (shouldTrigger) event.trigger();
         }
         else {
             tail.next = cast(shared)item;
             tail = cast(shared)item;
-            lock.unlock();
         }
+        lock.unlock();
+        return wasEmpty;
     }
 
     bool tryPop(ref T item) nothrow {
         lock.lock();
         if (!head) {
-            exhausted = true;
             lock.unlock();
             return false;
         }
@@ -54,7 +51,6 @@ public:
     T drain() nothrow {
         lock.lock();
         if (head is null) {
-            exhausted = true;
             lock.unlock();
             return null;
         }

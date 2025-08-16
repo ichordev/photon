@@ -106,7 +106,6 @@ void runFibers()
     schedulerEntry(0);
     foreach (t; threads)
         t.join();
-    version(linux) stoploop();
 }
 
 /++
@@ -115,12 +114,29 @@ void runFibers()
     `OutputRange` and `InputRange` concepts.
 +/
 struct Channel(T) {
-    __gshared RingQueue!(T, Event)* buf;
-    __gshared T item;
+private:
+    shared RingQueue!(T, Event)* buf_;
+    shared T item_;
     bool loaded;
 
+    ref T item() shared {
+        return *cast(T*)&item_;
+    }
+
+    ref buf() shared {
+        return *cast(RingQueue!(T, Event)**)&buf_;
+    }
+    
+    ref T item() {
+        return *cast(T*)&item_;
+    }
+
+    ref buf() {
+        return *cast(RingQueue!(T, Event)**)&buf_;
+    }
+public:
     this(size_t capacity) {
-        buf = allocRingQueue!T(capacity, Event(false), Event(false));
+        buf_ = cast(shared)allocRingQueue!T(capacity, Event(false), Event(false));
     }
 
     this(this) {
@@ -182,7 +198,7 @@ struct Channel(T) {
         if (buf) {
             if (buf.release) {
                 disposeRingQueue(buf);
-                buf = null;
+                buf_ = null;
             }
         }
     }
