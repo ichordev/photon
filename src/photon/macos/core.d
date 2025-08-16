@@ -9,6 +9,7 @@ import std.exception;
 import std.conv;
 import std.array;
 import std.meta;
+import std.random;
 
 import core.thread;
 import core.internal.spinlock;
@@ -117,7 +118,7 @@ nothrow:
         event.udata = cast(void*)(cast(size_t)cast(void*)currentFiber | 0x1);
         timespec timeout;
         timeout.tv_nsec = 1000;
-        kevent(kq, &event, 1, null, 0, &timeout).checked("arming the timer");
+        kevent(getCurrentKqueue, &event, 1, null, 0, &timeout).checked("arming the timer");
     }
 
     void disarm() {
@@ -128,7 +129,7 @@ nothrow:
         event.fflags = 0;
         timespec timeout;
         timeout.tv_nsec = 1000;
-        kevent(kq, &event, 1, null, 0, &timeout).checked("canceling the timer");
+        kevent(getCurrentKqueue, &event, 1, null, 0, &timeout).checked("canceling the timer");
     }
 
     private void waitThread(const timespec* ts) {
@@ -142,7 +143,7 @@ nothrow:
         event.udata = cast(void*)(cast(size_t)mach_thread_self() << 1);
         timespec timeout;
         timeout.tv_nsec = 1000;
-        kevent(kq, &event, 1, null, 0, &timeout).checked("arming the timer for a thread");
+        kevent(getCurrentKqueue, &event, 1, null, 0, &timeout).checked("arming the timer for a thread");
     }
 
     private size_t id;
@@ -164,6 +165,8 @@ nothrow:
         if (signaled) trigger();
         this.fds = fds;
     }
+
+    private int fd() shared { return fds[0]; }
 
     private int fd() { return fds[0]; }
 
@@ -235,6 +238,7 @@ nothrow:
 
     private int fd() { return fds[0]; }
 
+    private int fd() shared { return fds[0]; }
     /// 
     void wait() {
         byte[1] bytes = void;
@@ -295,7 +299,7 @@ struct AwaitingFiber {
     shared FiberExt fiber;
     AwaitingFiber* next;
 
-    void scheduleAll(int wakeFd) nothrow
+    void scheduleAll(int wakeFd, size_t nsched) nothrow
     {
         auto w = &this;
         FiberExt head;
@@ -312,7 +316,7 @@ struct AwaitingFiber {
             logf("Waking with FD=%d", wakeFd);
             head.wakeFd = wakeFd;
             auto next = head.next;
-            head.schedule();
+            head.schedule(nsched);
             head = next;
         }
     }
@@ -337,21 +341,23 @@ class FiberExt : Fiber {
         numScheduler = numSched;
     }
 
-    void schedule() nothrow
+    void schedule(size_t nsched) nothrow
     {
         scheds[numScheduler].queue.push(this);
+        if (nsched != numScheduler) {
+            notifyEventloop(numScheduler);
+        }
     }
 }
 
-FiberExt currentFiber; 
-shared RawEvent termination; // termination event, triggered once last fiber exits
-shared pthread_t eventLoop; // event loop, runs outside of D runtime
+FiberExt currentFiber;
 shared int alive; // count of non-terminated Fibers scheduled
 
 struct SchedulerBlock {
     shared IntrusiveQueue!(FiberExt, RawEvent) queue;
     shared uint assigned;
-    size_t[1] padding;
+    int kq;
+    int padding;
 }
 static assert(SchedulerBlock.sizeof == 64);
 
@@ -360,6 +366,19 @@ package(photon) shared SchedulerBlock[] scheds;
 enum int MAX_EVENTS = 500;
 enum int SIGNAL = 42;
 
+void notifyEventloop(size_t n) nothrow {
+    KEvent event;
+    event.ident = n;
+    event.filter = EVFILT_USER;
+    event.flags = EV_ADD | EV_ENABLE | EV_ONESHOT;
+    event.fflags = NOTE_TRIGGER;
+    logf("Notifying event loop %d", n);
+    kevent(scheds[n].kq, &event, 1, null, 0, null).checked("notifying event loop");
+}
+
+int getCurrentKqueue() nothrow {
+    return currentFiber !is null ? scheds[currentFiber.numScheduler].kq : scheds[0].kq;
+}
 
 package(photon) void schedulerEntry(size_t n)
 {
@@ -369,33 +388,34 @@ package(photon) void schedulerEntry(size_t n)
     sched_setaffinity(tid, mask.sizeof, &mask).checked("sched_setaffinity");
     */
     shared SchedulerBlock* sched = scheds.ptr + n;
-    while (alive > 0) {
-        sched.queue.event.waitAndReset();
-        for(;;) {
-            FiberExt f = sched.queue.drain();
-            if (f is null) break; // drained an empty queue, time to sleep
-            do {
-                auto next = f.next; //save next, it will be reused on scheduling
-                currentFiber = f;
-                logf("Fiber %x started", cast(void*)f);
-                try {
-                    f.call();
-                }
-                catch (Throwable e) {
-                    stderr.writeln(e);
-                    atomicOp!"-="(alive, 1);
-                }
-                if (f.state == FiberExt.State.TERM) {
-                    logf("Fiber %s terminated", cast(void*)f);
-                    atomicOp!"-="(alive, 1);
-                }
-                f = next;
-            } while(f !is null);
+    void onTermination() {
+        atomicOp!"-="(alive, 1);
+        if (alive == 0) {
+            foreach (i; 0..scheds.length) {
+                notifyEventloop(i);
+            }
         }
     }
-    termination.trigger();
-    foreach (ref s; scheds) {
-        s.queue.event.trigger();
+    while (alive > 0) {
+        FiberExt f = sched.queue.drain();
+        while (f) {
+            auto next = f.next; //save next, it will be reused on scheduling
+            currentFiber = f;
+            logf("Fiber %x started", cast(void*)f);
+            try {
+                f.call();
+            }
+            catch (Throwable e) {
+                stderr.writeln(e);
+                onTermination();
+            }
+            if (f.state == FiberExt.State.TERM) {
+                logf("Fiber %s terminated", cast(void*)f);
+                onTermination();
+            }
+            f = next;
+        }
+        processEventsEntry(n);
     }
 }
 
@@ -406,7 +426,6 @@ public void go(void function() func) {
 
 /// Setup a fiber task to run on the Photon scheduler.
 public void go(void delegate() func) {
-    import std.random;
     uint choice;
     if (scheds.length == 1) choice = 0;
     else {
@@ -422,7 +441,8 @@ public void go(void delegate() func) {
     atomicOp!"+="(alive, 1);
     auto f = new FiberExt(func, choice);
     logf("Assigned %x -> %d / %d scheduler", cast(void*)f, choice, scheds.length);
-    f.schedule();
+    f.schedule(choice);
+    notifyEventloop(choice);
 }
 
 /// Convenience overload for goOnSameThread that accepts functions 
@@ -438,12 +458,11 @@ public void goOnSameThread(void delegate() func) {
     atomicOp!"+="(alive, 1);
     auto f = new FiberExt(func, choice);
     logf("Assigned %x -> %d / %d scheduler", cast(void*)f, choice, scheds.length);
-    f.schedule();
+    f.schedule(choice);
+    notifyEventloop(choice);
 }
 
 shared Descriptor[] descriptors;
-shared int event_loop_fd;
-shared int signal_loop_fd;
 
 enum ReaderState: uint {
     EMPTY = 0,
@@ -537,15 +556,15 @@ nothrow:
     }
 
     // try to schedule readers - if fails - someone added a reader, it's now his job to check state
-    void scheduleReaders()(int wakeFd) {
+    void scheduleReaders()(int wakeFd, size_t nsched) {
         auto w = steal(_readerWaits);
-        if (w) w.unshared.scheduleAll(wakeFd);
+        if (w) w.unshared.scheduleAll(wakeFd, nsched);
     }
 
     // try to schedule writers, ditto
-    void scheduleWriters()(int wakeFd) {
+    void scheduleWriters()(int wakeFd, size_t nsched) {
         auto w = steal(_writerWaits);
-        if (w) w.unshared.scheduleAll(wakeFd);
+        if (w) w.unshared.scheduleAll(wakeFd, nsched);
     }
 }
 
@@ -563,8 +582,6 @@ void printStats()
     write(2, msg.ptr, msg.length);
 }
 
-shared int kq;
-shared int eventLoopId;
 __gshared ssize_t function (const timespec* req, const timespec* rem) libcNanosleep;
 Timer[] timerPool; // thread-local pool of preallocated timers
 
@@ -592,9 +609,22 @@ if (is(T : const timespec*) || is(T : Duration)) {
     freeSleepTimer(tm);
 }
 
-// 
-enum isAwaitable(E) = is (E : Event) || is (E : Semaphore) 
-    || is(E : Event*) || is(E : Semaphore*);
+template Unshared(T) {
+    static if (is(T: shared(U), U)) {
+        alias Unshared = U;
+    } else static if (is(T: shared(U)*, U)) {
+        alias Unshared = U*;
+    }
+    else {
+        alias Unshared = T;
+    }
+}
+///
+public enum isAwaitable(E) = is (Unshared!E : Event) || is (Unshared!E : Semaphore) 
+    || is(Unshared!E : Event*) || is(Unshared!E : Semaphore*);
+
+static assert(isAwaitable!(Event*));
+static assert(isAwaitable!(shared(Event)*));
 
 public size_t awaitAny(Awaitable...)(auto ref Awaitable args) 
 if (allSatisfy!(isAwaitable, Awaitable)) {
@@ -604,7 +634,7 @@ if (allSatisfy!(isAwaitable, Awaitable)) {
         fds[i].fd = arg.fd;
         fds[i].events = POLL_IN;
     }
-    int resp;
+    ssize_t resp;
     do {
         resp = poll(fds, cast(nfds_t)args.length, -1); 
     } while (resp < 0 && errno == EINTR);
@@ -619,7 +649,7 @@ if (allSatisfy!(isAwaitable, Awaitable)) {
 }
 
 public size_t awaitAny(Awaitable)(Awaitable[] args) 
-if (allSatisfy!(isAwaitable, Awaitable)) {
+if (isAwaitable!(Awaitable)) {
     pollfd* fds = cast(pollfd*)calloc(args.length, pollfd.sizeof);
     scope(exit) free(fds);
     foreach (i, ref arg; args) {
@@ -646,99 +676,92 @@ public void startloop()
     debug(photon_single) {
         threads = 1;
     }
-    kq = kqueue();
-    enforce(kq != -1);
     ssize_t fdMax = sysconf(_SC_OPEN_MAX).checked;
     descriptors = (cast(shared(Descriptor*)) mmap(null, fdMax * Descriptor.sizeof, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0))[0..fdMax];
     scheds = new SchedulerBlock[threads];
-    termination = RawEvent(0);
     foreach(ref sched; scheds) {
         sched.queue = IntrusiveQueue!(FiberExt, RawEvent)(RawEvent(0));
+        sched.kq = kqueue();
+        enforce(sched.kq != -1);
     }
-    pthread_create(cast(pthread_t*)&eventLoop, null, &processEventsEntry, null);
 }
 
-package(photon) void stoploop()
-{
-    void* ret;
-    pthread_join(cast(pthread_t)eventLoop, &ret);
-}
-
-extern(C) void* processEventsEntry(void*)
+void processEventsEntry(size_t n)
 {
     KEvent[MAX_EVENTS] ke;
-    for (;;) {
-	    int cnt = kevent(kq, null, 0, ke.ptr, MAX_EVENTS, null);
-        enforce(cnt >= 0);
-		for (int i = 0; i < cnt; i++) {
-            auto fd = cast(int)ke[i].ident;
-            auto filter = ke[i].filter;
-            auto descriptor = descriptors.ptr + fd;
-            if (filter == EVFILT_READ) {
-                logf("Read event for fd=%d", fd);
-                if (fd == termination.fds[0]) return null;
-                auto state = descriptor.readerState;
-                logf("read state = %d", state);                
-                final switch(descriptor.readerState) with(ReaderState) {
-                    case EMPTY:
-                        logf("Trying to schedule readers");
-                        descriptor.changeReader(EMPTY, READY);
-                        descriptor.scheduleReaders(fd);
-                        logf("Scheduled readers");
-                        break;
-                    case UNCERTAIN:
-                        descriptor.changeReader(UNCERTAIN, READY);
-                        break;
-                    case READING:
-                        if (!descriptor.changeReader(READING, UNCERTAIN)) {
-                            if (descriptor.changeReader(EMPTY, UNCERTAIN)) // if became empty - move to UNCERTAIN and wake readers
-                                descriptor.scheduleReaders(fd);
-                        }
-                        break;
-                    case READY:
-                        descriptor.scheduleReaders(fd);
-                        break;
-                }
+    int cnt = kevent(scheds[n].kq, null, 0, ke.ptr, MAX_EVENTS, null);
+    enforce(cnt >= 0);
+    for (int i = 0; i < cnt; i++) {
+        auto fd = cast(int)ke[i].ident;
+        auto filter = ke[i].filter;
+        auto descriptor = descriptors.ptr + fd;
+        if (filter == EVFILT_READ) {
+            logf("Read event for fd=%d", fd);
+            auto state = descriptor.readerState;
+            logf("read state = %d", state);                
+            final switch(descriptor.readerState) with(ReaderState) {
+                case EMPTY:
+                    logf("Trying to schedule readers");
+                    descriptor.changeReader(EMPTY, READY);
+                    descriptor.scheduleReaders(fd, n);
+                    logf("Scheduled readers");
+                    break;
+                case UNCERTAIN:
+                    descriptor.changeReader(UNCERTAIN, READY);
+                    descriptor.scheduleReaders(fd, n);
+                    break;
+                case READING:
+                    if (!descriptor.changeReader(READING, UNCERTAIN)) {
+                        if (descriptor.changeReader(EMPTY, UNCERTAIN)) // if became empty - move to UNCERTAIN and wake readers
+                            descriptor.scheduleReaders(fd, n);
+                    }
+                    break;
+                case READY:
+                    descriptor.scheduleReaders(fd, n);
+                    break;
             }
-            if (filter == EVFILT_WRITE) {
-                logf("Write event for fd=%d", fd);
-                auto state = descriptor.writerState;
-                logf("write state = %d", state);
-                final switch(state) with(WriterState) { 
-                    case FULL:
-                        descriptor.changeWriter(FULL, READY);
-                        descriptor.scheduleWriters(fd);
-                        break;
-                    case UNCERTAIN:
-                        descriptor.changeWriter(UNCERTAIN, READY);
-                        break;
-                    case WRITING:
-                        if (!descriptor.changeWriter(WRITING, UNCERTAIN)) {
-                            if (descriptor.changeWriter(FULL, UNCERTAIN)) // if became empty - move to UNCERTAIN and wake writers
-                                descriptor.scheduleWriters(fd);
-                        }
-                        break;
-                    case READY:
-                        descriptor.scheduleWriters(fd);
-                        break;
-                }
-                logf("Awaits %x", cast(void*)descriptor.writeWaiters);
-            }
-            if (filter == EVFILT_TIMER) {
-                size_t udata = cast(size_t)ke[i].udata;
-                if (udata & 0x1) {
-                    auto ptr = udata & ~1;
-                    FiberExt fiber = *cast(FiberExt*)&ptr;
-                    fiber.wakeFd = wokenUpByTimer;
-                    fiber.schedule();
-                }
-                else {
-                    auto thread = cast(thread_act_t)udata >> 1;
-                    thread_resume(thread);
-                }
-            }
-            descriptors[ke[i].ident].scheduleWriters(cast(int)ke[i].ident);   
         }
+        if (filter == EVFILT_WRITE) {
+            logf("Write event for fd=%d", fd);
+            auto state = descriptor.writerState;
+            logf("write state = %d", state);
+            final switch(state) with(WriterState) { 
+                case FULL:
+                    descriptor.changeWriter(FULL, READY);
+                    descriptor.scheduleWriters(fd, n);
+                    break;
+                case UNCERTAIN:
+                    descriptor.changeWriter(UNCERTAIN, READY);
+                    descriptor.scheduleWriters(fd, n);
+                    break;
+                case WRITING:
+                    if (!descriptor.changeWriter(WRITING, UNCERTAIN)) {
+                        if (descriptor.changeWriter(FULL, UNCERTAIN)) // if became full - move to UNCERTAIN and wake writers
+                            descriptor.scheduleWriters(fd, n);
+                    }
+                    break;
+                case READY:
+                    descriptor.scheduleWriters(fd, n);
+                    break;
+            }
+            logf("Awaits %x", cast(void*)descriptor.writeWaiters);
+        }
+        if (filter == EVFILT_TIMER) {
+            size_t udata = cast(size_t)ke[i].udata;
+            if (udata & 0x1) {
+                auto ptr = udata & ~1;
+                FiberExt fiber = *cast(FiberExt*)&ptr;
+                fiber.wakeFd = wokenUpByTimer;
+                fiber.schedule(n);
+            }
+            else {
+                auto thread = cast(thread_act_t)udata >> 1;
+                thread_resume(thread);
+            }
+        }
+        if (filter == EVFILT_USER) {
+            logf("USER event %s", ke[i].ident);
+        } 
     }
 }
 
@@ -762,9 +785,7 @@ void interceptFd(Fcntl needsFcntl)(int fd) nothrow {
         ke[0].filter = EVFILT_READ;
         ke[1].filter = EVFILT_WRITE;
         ke[1].flags = ke[0].flags = EV_ADD | EV_ENABLE | EV_CLEAR;
-        timespec timeout;
-        timeout.tv_nsec = 1000;
-        kevent(kq, ke.ptr, 2, null, 0, &timeout);
+        kevent(getCurrentKqueue, ke.ptr, 2, null, 0, null).checked;
     }
 }
 
@@ -773,8 +794,8 @@ void deregisterFd(int fd) nothrow {
         auto descriptor = descriptors.ptr + fd;
         atomicStore(descriptor._writerState, WriterState.READY);
         atomicStore(descriptor._readerState, ReaderState.EMPTY);
-        descriptor.scheduleReaders(fd);
-        descriptor.scheduleWriters(fd);
+        descriptor.scheduleReaders(fd, currentFiber.numScheduler);
+        descriptor.scheduleWriters(fd, currentFiber.numScheduler);
         atomicStore(descriptor.state, DescriptorState.NOT_INITED);
     }
 }
@@ -811,7 +832,7 @@ ssize_t universalSyscall(size_t ident, string name, SyscallKind kind, Fcntl fcnt
                 logf("EMPTY - enqueue reader");
                 if (!descriptor.enqueueReader(&await)) goto L_start;
                 // changed state to e.g. READY or UNCERTAIN in meantime, may need to reschedule
-                if (descriptor.readerState != EMPTY) descriptor.scheduleReaders(fd);
+                if (descriptor.readerState != EMPTY) descriptor.scheduleReaders(fd, currentFiber.numScheduler);
                 FiberExt.yield();
                 goto L_start;
             case UNCERTAIN:
@@ -855,7 +876,7 @@ ssize_t universalSyscall(size_t ident, string name, SyscallKind kind, Fcntl fcnt
                 logf("FULL FD=%d Fiber %x", fd, cast(void*)currentFiber);
                 if (!descriptor.enqueueWriter(&await)) goto L_start;
                 // changed state to e.g. READY or UNCERTAIN in meantime, may need to reschedule
-                if (descriptor.writerState != FULL) descriptor.scheduleWriters(fd);
+                if (descriptor.writerState != FULL) descriptor.scheduleWriters(fd, currentFiber.numScheduler);
                 FiberExt.yield();
                 goto L_start;
             case UNCERTAIN:
@@ -954,7 +975,7 @@ extern(C) private ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags,
 
 extern(C) private ssize_t poll(pollfd *fds, nfds_t nfds, int timeout)
 {
-    nothrow bool nonBlockingCheck(ref ssize_t result) {
+    nothrow bool nonBlockingCheck(ref ssize_t result, int timeout) {
         bool uncertain;
     L_cacheloop:
         foreach (ref fd; fds[0..nfds]) {
@@ -1008,7 +1029,7 @@ extern(C) private ssize_t poll(pollfd *fds, nfds_t nfds, int timeout)
                 }
             }
             logf("Using our own event cache: %d events", j);
-            if (j > 0) {
+            if (j > 0 || timeout == 0) {
                 result = cast(ssize_t)j;
                 return true;
             }
@@ -1042,7 +1063,7 @@ extern(C) private ssize_t poll(pollfd *fds, nfds_t nfds, int timeout)
             fd.revents = 0;
         }
         ssize_t result = 0;
-        if (nonBlockingCheck(result)) return result;
+        if (nonBlockingCheck(result, timeout)) return result;
         shared AwaitingFiber aw = shared(AwaitingFiber)(cast(shared)currentFiber);
         foreach (i; 0..nfds) {
             if (fds[i].events & POLLIN)
@@ -1068,7 +1089,7 @@ extern(C) private ssize_t poll(pollfd *fds, nfds_t nfds, int timeout)
         logf("Woke up after select %x. WakeFD=%d", cast(void*)currentFiber, currentFiber.wakeFd);
         if (currentFiber.wakeFd == wokenUpByTimer) return 0;
         else {
-            nonBlockingCheck(result);
+            nonBlockingCheck(result, timeout);
             return result;
         }
     }

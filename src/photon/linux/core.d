@@ -327,10 +327,22 @@ if (is(T : const timespec*) || is(T : Duration)) {
     tm.wait(req);
     freeSleepTimer(tm);
 }
+template Unshared(T) {
+    static if (is(T: shared(U), U)) {
+        alias Unshared = U;
+    } else static if (is(T: shared(U)*, U)) {
+        alias Unshared = U*;
+    }
+    else {
+        alias Unshared = T;
+    }
+}
+///
+public enum isAwaitable(E) = is (Unshared!E : Event) || is (Unshared!E : Semaphore) 
+    || is(Unshared!E : Event*) || is(Unshared!E : Semaphore*);
 
-/// 
-enum isAwaitable(E) = is (E : Event) || is (E : Semaphore) 
-    || is(E : Event*) || is(E : Semaphore*);
+static assert(isAwaitable!(Event*));
+static assert(isAwaitable!(shared(Event)*));
 
 ///
 public size_t awaitAny(Awaitable...)(auto ref Awaitable args) 

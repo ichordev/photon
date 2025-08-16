@@ -7,6 +7,7 @@
 	"dependencies": {
 		"photon": { "path": ".." }
 	},
+    "debugVersions": ["photon"],
 	"description": "Echo server - a simple server that sends whatever it receives",
 	"license": "BOOST",
 	"name": "echo_server"
