@@ -45,7 +45,7 @@ shared static this() {
 shared struct RawEvent {
 nothrow:
     this(int init) {
-        fd = eventfd(init, 0);
+        fd = eventfd(init, 0).checked("raw event");
     }
 
     void waitAndReset() {
@@ -80,7 +80,7 @@ nothrow:
     private int evfd;
 
     this(bool signaled) {
-        evfd = eventfd(signaled ? 1 : 0, EFD_NONBLOCK);
+        evfd = eventfd(signaled ? 1 : 0, EFD_NONBLOCK).checked("Event constructor");
         interceptFd!(Fcntl.noop)(evfd);
     }
 
@@ -131,7 +131,7 @@ nothrow:
     private int evfd;
     ///
     this(int count) {
-        evfd = eventfd(count, EFD_NONBLOCK | EFD_SEMAPHORE);
+        evfd = eventfd(count, EFD_NONBLOCK | EFD_SEMAPHORE).checked("Semaphore constructor");
         interceptFd!(Fcntl.noop)(evfd);
     }
 
