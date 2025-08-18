@@ -1,6 +1,6 @@
 module photon.macos.core;
 version(OSX):
-private:
+package(photon):
 
 import std.stdio;
 import std.string;
@@ -35,6 +35,7 @@ import core.sys.darwin.mach.thread_act;
 import photon.macos.support;
 import photon.ds.common;
 import photon.ds.intrusive_queue;
+import photon.threadpool;
 
 alias KEvent = kevent_t;
 enum SYS_READ = 3;
@@ -84,6 +85,11 @@ nothrow:
             r = raw_write(fds[1], bytes.ptr, 1);
         } while(r < 0 && errno == EINTR);
         r.checked("event trigger");
+    }
+
+    void close() {
+        .close(fds[0]);
+        .close(fds[1]);
     }
     
     private int[2] fds;
@@ -684,6 +690,7 @@ public void startloop()
         sched.kq = kqueue();
         enforce(sched.kq != -1);
     }
+    initWorkQueues(threads);
 }
 
 void processEventsEntry(size_t n)

@@ -1,6 +1,6 @@
 module photon.freebsd.core;
 version(FreeBSD):
-private:
+package(photon):
 
 import std.stdio;
 import std.string;
@@ -29,6 +29,7 @@ import photon.freebsd.support;
 import photon.freebsd.syscalls;
 import photon.ds.common;
 import photon.ds.intrusive_queue;
+import photon.threadpool;
 
 // T becomes thread-local b/c it's stolen from shared resource
 auto steal(T)(ref shared T arg)
@@ -67,6 +68,10 @@ nothrow:
             r = raw_write(fd, value.bytes.ptr, 8);
         } while(r < 0 && errno == EINTR);
         r.checked("event trigger");
+    }
+
+    void close() {
+        .close(fd);
     }
     
     int fd;
@@ -425,6 +430,7 @@ public void startloop()
     enforce(kq != -1);
     
     eventLoop = pthread_create(cast(pthread_t*)&eventLoop, null, &processEventsEntry, null);
+    initWorkQueues(threads);
 }
 
 package(photon) void stoploop()
