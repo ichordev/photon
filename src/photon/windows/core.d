@@ -1,6 +1,6 @@
 module photon.windows.core;
 version(Windows):
-private:
+package(photon):
 
 import core.sys.windows.core;
 import core.sys.windows.winsock2;
@@ -20,6 +20,7 @@ import rewind.map;
 import photon.ds.common;
 import photon.ds.intrusive_queue;
 import photon.windows.support;
+import photon.threadpool;
 
 shared struct RawEvent {
 nothrow:
@@ -335,6 +336,7 @@ public void startloop() {
     iocp = CreateIoCompletionPort(cast(HANDLE)INVALID_HANDLE_VALUE, null, 0, 1);
     wenforce(iocp != null, "Failed to create IO Completion Port");
     wenforce(CreateThread(null, 0, &eventLoop, null, 0, null) != null, "Failed to start event loop");
+    initWorkQueues(threads);
 }
 
 /// Convenience overload for functions
