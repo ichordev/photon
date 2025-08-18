@@ -71,6 +71,8 @@ else version(freeBSD) public import photon.freebsd.core;
 else version(OSX) public import photon.macos.core;
 else static assert(false, "Target OS not supported by Photon yet!");
 
+public import photon.threadpool;
+
 version(PhotonDocs) {
 
 /// Initialize event loop and internal data structures for Photon scheduler.
@@ -89,6 +91,11 @@ public void goOnSameThread(void delegate() func);
 /// ditto
 public void goOnSameThread(void function() func);
 
+/**
+    Run work on a dedicated thread pool and pass the result back to the calling fiber or thread.
+    This avoids blocking event loop on computationally intensive tasks.
+*/
+T offload(T)(T delegate() work);
 }
 
 /// Start sheduler and run fibers until all are terminated.

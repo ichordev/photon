@@ -1,6 +1,6 @@
 module photon.linux.core;
 version(linux):
-private:
+package(photon):
 
 import std.stdio;
 import std.string;
@@ -35,6 +35,7 @@ import photon.linux.support;
 import photon.linux.syscalls;
 import photon.ds.common;
 import photon.ds.intrusive_queue;
+import photon.threadpool;
 
 immutable size_t pageSize;
 
@@ -69,6 +70,10 @@ nothrow:
             r = raw_write(fd, value.bytes.ptr, 8);
         } while(r < 0 && errno == EINTR);
         r.checked("event trigger");
+    }
+
+    void close() {
+        .close(fd);
     }
     
     int fd;
@@ -443,6 +448,7 @@ package(photon) void schedulerEntry(size_t n)
     foreach (ref s; scheds) {
         s.queue.event.trigger();
     }
+    terminateWorkQueues();
 }
 
 /// Convenience overload for functions
@@ -666,6 +672,7 @@ public void startloop()
         sigaction(SIGTERM, &action, null).checked;
     }
 
+    initWorkQueues(threads);
 }
 
 void processEventsEntry(size_t numSched)

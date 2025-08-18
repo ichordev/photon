@@ -68,6 +68,10 @@ nothrow:
         } while(r < 0 && errno == EINTR);
         r.checked("event trigger");
     }
+
+    void close() {
+        .close(fd);
+    }
     
     int fd;
 }

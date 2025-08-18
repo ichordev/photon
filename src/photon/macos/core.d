@@ -85,6 +85,11 @@ nothrow:
         } while(r < 0 && errno == EINTR);
         r.checked("event trigger");
     }
+
+    void close() {
+        .close(fds[0]);
+        .close(fds[1]);
+    }
     
     private int[2] fds;
 }
