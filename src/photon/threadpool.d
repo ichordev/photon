@@ -17,7 +17,7 @@ else version(Windows) public import photon.windows.core;
 alias Work = void delegate();
 
 class WorkItem {
-    this(FiberExt fiber, Work work) {
+    this(FiberExt fiber, Work work) nothrow {
         this.fiber = fiber;
         this.work = work;
     }
@@ -83,21 +83,24 @@ void processWorkQueue(size_t i) {
     }
 }
 
-void pushWork(WorkItem item) {
+void pushWork(WorkItem item) nothrow {
     uint choice;
-    if (queues.length == 1) choice = 0;
-    else {
-        uint a = uniform!"[)"(0, cast(uint)queues.length);
-        uint b = uniform!"[)"(0, cast(uint)queues.length-1);
-        if (a == b) b = cast(uint)queues.length-1;
-        uint loadA = queues[a].assigned;
-        uint loadB = queues[b].assigned;
-        if (loadA < loadB) choice = a;
-        else choice = b;
+    try {
+        if (queues.length == 1) choice = 0;
+        else {
+            uint a = uniform!"[)"(0, cast(uint)queues.length);
+            uint b = uniform!"[)"(0, cast(uint)queues.length-1);
+            if (a == b) b = cast(uint)queues.length-1;
+            uint loadA = queues[a].assigned;
+            uint loadB = queues[b].assigned;
+            if (loadA < loadB) choice = a;
+            else choice = b;
+        }
+        atomicOp!"+="(queues[choice].assigned, 1);
+        bool wasEmpty = queues[choice].runq.push(item);
+        if (wasEmpty) queues[choice].runq.event.trigger();
+    } catch(Throwable t) {
     }
-    atomicOp!"+="(queues[choice].assigned, 1);
-    bool wasEmpty = queues[choice].runq.push(item);
-    if (wasEmpty) queues[choice].runq.event.trigger();
 }
 
 public:
@@ -127,6 +130,26 @@ T offload(T)(T delegate() work) {
     pushWork(item);
     FiberExt.yield();
     if (thr) throw thr;
+    static if (!is(T == void)) {
+        return result;
+    }
+}
+
+T offload(T)(T delegate() nothrow work) nothrow{
+    if (currentFiber is null) return work();
+    static if (!is(T == void)) {
+        T result;
+    }
+    //TODO: pool items?
+    auto item = new WorkItem(currentFiber, () {
+        static if (is(T == void)) {
+            work();
+        } else {
+            result = work();
+        }
+    });
+    pushWork(item);
+    FiberExt.yield();
     static if (!is(T == void)) {
         return result;
     }
