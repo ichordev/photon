@@ -67,8 +67,8 @@ import photon.ds.ring_queue;
 
 version(Windows) public import photon.windows.core;
 else version(linux) public import photon.linux.core;
-else version(freeBSD) public import photon.freebsd.core;
 else version(OSX) public import photon.macos.core;
+else version(FreeBSD) public import photon.freebsd.core;
 else static assert(false, "Target OS not supported by Photon yet!");
 
 public import photon.threadpool;
