@@ -77,8 +77,8 @@ nothrow:
         } while(r < 0 && errno == EINTR);
         r.checked("event reset");
     }
-    
-    void trigger() { 
+
+    void trigger() {
         ubyte[1] bytes;
         ssize_t r;
         do {
@@ -91,7 +91,7 @@ nothrow:
         .close(fds[0]);
         .close(fds[1]);
     }
-    
+
     private int[2] fds;
 }
 
@@ -196,9 +196,9 @@ nothrow:
     private void reset() shared {
         waitAndReset();
     }
-    
+
     /// Trigger the event.
-    void trigger() { 
+    void trigger() {
         ubyte[1] bytes = void;
         ssize_t r;
         do {
@@ -245,7 +245,7 @@ nothrow:
     private int fd() { return fds[0]; }
 
     private int fd() shared { return fds[0]; }
-    /// 
+    ///
     void wait() {
         byte[1] bytes = void;
         ssize_t r;
@@ -266,9 +266,9 @@ nothrow:
     private void reset() shared {
         wait();
     }
-    
-    /// 
-    void trigger(int count) { 
+
+    ///
+    void trigger(int count) {
         ubyte[4096] bytes = void;
         ssize_t size = count > 4096 ? 4096 : count;
         ssize_t r;
@@ -277,7 +277,7 @@ nothrow:
         } while(r < 0 && errno == EINTR);
     }
 
-    /// 
+    ///
     void trigger(int count) shared {
         this.unshared.trigger(count);
     }
@@ -330,13 +330,13 @@ struct AwaitingFiber {
 
 enum wokenUpByTimer = 2;
 
-class FiberExt : Fiber { 
+class FiberExt : Fiber {
     FiberExt next;
     uint numScheduler;
     int wakeFd; // recieves fd that woken us up
 
     enum PAGESIZE = 4096;
-    
+
     this(void function() fn, uint numSched) nothrow {
         super(fn);
         numScheduler = numSched;
@@ -451,7 +451,7 @@ public void go(void delegate() func) {
     notifyEventloop(choice);
 }
 
-/// Convenience overload for goOnSameThread that accepts functions 
+/// Convenience overload for goOnSameThread that accepts functions.
 public void goOnSameThread(void function() func) {
     goOnSameThread({ func(); });
 }
@@ -493,7 +493,7 @@ enum DescriptorState: uint {
 
 // list of awaiting fibers
 shared struct Descriptor {
-    ReaderState _readerState;   
+    ReaderState _readerState;
     AwaitingFiber* _readerWaits;
     WriterState _writerState;
     AwaitingFiber* _writerWaits;
@@ -580,7 +580,7 @@ extern(C) void graceful_shutdown_on_signal(int, siginfo_t*, void*)
     _exit(9);
 }
 
-version(photon_tracing) 
+version(photon_tracing)
 void printStats()
 {
     // TODO: report on various events in eventloop/scheduler
@@ -626,13 +626,13 @@ template Unshared(T) {
     }
 }
 ///
-public enum isAwaitable(E) = is (Unshared!E : Event) || is (Unshared!E : Semaphore) 
+public enum isAwaitable(E) = is (Unshared!E : Event) || is (Unshared!E : Semaphore)
     || is(Unshared!E : Event*) || is(Unshared!E : Semaphore*);
 
 static assert(isAwaitable!(Event*));
 static assert(isAwaitable!(shared(Event)*));
 
-public size_t awaitAny(Awaitable...)(auto ref Awaitable args) 
+public size_t awaitAny(Awaitable...)(auto ref Awaitable args)
 if (allSatisfy!(isAwaitable, Awaitable)) {
     pollfd* fds = cast(pollfd*)calloc(args.length, pollfd.sizeof);
     scope(exit) free(fds);
@@ -642,7 +642,7 @@ if (allSatisfy!(isAwaitable, Awaitable)) {
     }
     ssize_t resp;
     do {
-        resp = poll(fds, cast(nfds_t)args.length, -1); 
+        resp = poll(fds, cast(nfds_t)args.length, -1);
     } while (resp < 0 && errno == EINTR);
     foreach (idx, ref arg; args[0..args.length]) {
         auto fd = fds[idx];
@@ -654,7 +654,7 @@ if (allSatisfy!(isAwaitable, Awaitable)) {
     assert(0);
 }
 
-public size_t awaitAny(Awaitable)(Awaitable[] args) 
+public size_t awaitAny(Awaitable)(Awaitable[] args)
 if (isAwaitable!(Awaitable)) {
     pollfd* fds = cast(pollfd*)calloc(args.length, pollfd.sizeof);
     scope(exit) free(fds);
@@ -664,7 +664,7 @@ if (isAwaitable!(Awaitable)) {
     }
     ssize_t resp;
     do {
-        resp = poll(fds, cast(nfds_t)args.length, -1); 
+        resp = poll(fds, cast(nfds_t)args.length, -1);
     } while (resp < 0 && errno == EINTR);
     foreach (idx, ref arg; args[0..args.length]) {
         auto fd = fds[idx];
@@ -705,7 +705,7 @@ void processEventsEntry(size_t n)
         if (filter == EVFILT_READ) {
             logf("Read event for fd=%d", fd);
             auto state = descriptor.readerState;
-            logf("read state = %d", state);                
+            logf("read state = %d", state);
             final switch(descriptor.readerState) with(ReaderState) {
                 case EMPTY:
                     logf("Trying to schedule readers");
@@ -732,7 +732,7 @@ void processEventsEntry(size_t n)
             logf("Write event for fd=%d", fd);
             auto state = descriptor.writerState;
             logf("write state = %d", state);
-            final switch(state) with(WriterState) { 
+            final switch(state) with(WriterState) {
                 case FULL:
                     descriptor.changeWriter(FULL, READY);
                     descriptor.scheduleWriters(fd, n);
@@ -768,7 +768,7 @@ void processEventsEntry(size_t n)
         }
         if (filter == EVFILT_USER) {
             logf("USER event %s", ke[i].ident);
-        } 
+        }
     }
 }
 
@@ -948,7 +948,7 @@ extern(C) ssize_t write(int fd, const void *buf, size_t count)
 extern(C) ssize_t accept(int sockfd, sockaddr *addr, socklen_t *addrlen)
 {
     return universalSyscall!(SYS_ACCEPT, "accept", SyscallKind.accept, Fcntl.explicit, EWOULDBLOCK)
-        (sockfd, cast(size_t) addr, cast(size_t) addrlen);    
+        (sockfd, cast(size_t) addr, cast(size_t) addrlen);
 }
 
 extern(C) ssize_t connect(int sockfd, const sockaddr *addr, socklen_t *addrlen)
@@ -970,7 +970,7 @@ extern(C) size_t recv(int sockfd, void *buf, size_t len, int flags) nothrow {
     src_addr.sin_port = 0;
     src_addr.sin_addr.s_addr = htonl(INADDR_ANY);
     ssize_t addrlen = sockaddr_in.sizeof;
-    return recvfrom(sockfd, buf, len, flags, cast(sockaddr*)&src_addr, &addrlen);   
+    return recvfrom(sockfd, buf, len, flags, cast(sockaddr*)&src_addr, &addrlen);
 }
 
 extern(C) private ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags,
